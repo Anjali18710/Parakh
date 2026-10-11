@@ -1,0 +1,21 @@
+# Python
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/
+venv/
+.env
+
+# Evaluation output (commit a summary by copying it into the README)
+backend/results/
+
+# Frontend
+node_modules/
+frontend/dist/
+frontend/.env
+frontend/.env.local
+
+# OS / editors
+.DS_Store
+.vscode/
+.idea/
