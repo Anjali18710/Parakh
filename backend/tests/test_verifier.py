@@ -1,0 +1,54 @@
+from parakh.agents.verifier import _amounts_in_text, verify_report
+
+
+def _txns(store, n=2):
+    acc = store.df.from_account.value_counts().index[0]
+    rows = store.out_txns(acc).head(n)
+    return acc, rows
+
+
+def test_correct_claims_pass(store):
+    acc, rows = _txns(store)
+    total = float(rows.amount.sum())
+    report = {"verdict": "suspicious", "claims": [
+        {"statement": f"{acc} sent ₹{total:,.2f} in two payments.", "txn_ids": list(rows.txn_id),
+         "accounts": [acc], "amount": total, "count": 2},
+        {"statement": f"{acc} made a payment.", "txn_ids": [rows.txn_id.iloc[0]], "accounts": [acc]},
+    ]}
+    result = verify_report(report, store, acc)
+    assert result["passed"], result["issues"]
+    assert result["claims_verified"] == 2
+
+
+def test_invented_transaction_is_caught(store):
+    acc, rows = _txns(store, 1)
+    report = {"verdict": "not_suspicious", "claims": [
+        {"statement": "A transfer happened.", "txn_ids": ["T9999999"], "accounts": []},
+        {"statement": "Real one.", "txn_ids": [rows.txn_id.iloc[0]], "accounts": [acc]},
+    ]}
+    result = verify_report(report, store, acc)
+    assert not result["passed"]
+    assert "do not exist" in result["claim_results"][0]["problems"][0]
+
+
+def test_wrong_amount_and_wrong_account_are_caught(store):
+    acc, rows = _txns(store, 1)
+    report = {"verdict": "not_suspicious", "claims": [
+        {"statement": "Sent ₹99 lakh.", "txn_ids": [rows.txn_id.iloc[0]], "accounts": [acc, "AC000001"]},
+    ]}
+    problems = verify_report(report, store, acc)["claim_results"][0]["problems"]
+    assert any("AC000001" in p for p in problems)
+    assert any("does not match" in p for p in problems)
+
+
+def test_suspicious_needs_two_verified_claims(store):
+    acc, rows = _txns(store, 1)
+    report = {"verdict": "suspicious", "claims": [
+        {"statement": "One payment.", "txn_ids": [rows.txn_id.iloc[0]], "accounts": [acc]}]}
+    assert not verify_report(report, store, acc)["passed"]
+
+
+def test_amount_parsing_handles_indian_units_and_ignores_ids_and_dates():
+    assert _amounts_in_text("moved ₹9.5 lakh and then ₹1.2 crore") == [950000.0, 12000000.0]
+    assert _amounts_in_text("On 2026-07-09 14:25 AC123456 sent T0001234 in 2026") == []
+    assert _amounts_in_text("₹66,41,114 left within 48h, 98% of it") == [6641114.0]
