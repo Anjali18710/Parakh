@@ -1,0 +1,24 @@
+# Render Blueprint for the Parakh API (free plan).
+# In Render: New > Blueprint > pick this repo. You will be asked for the secret values below.
+services:
+  - type: web
+    name: parakh-api
+    runtime: python
+    plan: free
+    rootDir: backend
+    buildCommand: pip install -r requirements.txt && python -m parakh.tools.screening
+    startCommand: uvicorn parakh.api.main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /api/health
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.8
+      - key: GROQ_API_KEY
+        sync: false
+      - key: MONGODB_URI
+        sync: false
+      - key: CORS_ORIGINS
+        sync: false
+      - key: GROQ_MODEL
+        value: llama-3.3-70b-versatile
+      - key: MAX_CASES_PER_RUN
+        value: "5"
