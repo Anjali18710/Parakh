@@ -111,3 +111,26 @@ def test_relationships_separate_business_from_laundering(store):
     tools = InvestigationTools(store)
     rel = tools.account_profile(store.df.to_account.value_counts().index[0])["relationships"]
     assert 0 <= rel["inflow_from_repeat_senders"] <= 1 and "outflow_schedule" in rel
+
+
+def test_pattern_conflicts_with_measured_shape():
+    from parakh.agents.graph import pattern_conflict
+    hub = {"senders_in_window": 8, "recipients_in_window": 6}
+    assert pattern_conflict("fan_in", hub, {}) is not None
+    assert pattern_conflict("gather_scatter", hub, {}) is None
+    trader = {"senders_in_window": 13, "recipients_in_window": 1, "inflow_from_repeat_senders": 1.0}
+    assert pattern_conflict("wholesale", trader, {}) is None
+    assert pattern_conflict("wholesale", {**trader, "inflow_from_repeat_senders": 0.0}, {}) is not None
+
+
+def test_wrong_pattern_is_sent_back_once(store):
+    llm = FakeLLM(pattern_id="fan_in")
+    deps = Deps(llm, store, InvestigationTools(store), PatternLibrary(), Settings())
+    graph = build_case_graph(deps, "multi", human_review=False)
+    hub = "AC387042" if store.has_account("AC387042") else screen(store)[0].account
+    state = graph.invoke({"case_id": "t9", "account": hub, "alert": {"signals": []}, "mode": "multi",
+                          "analyst_notes": [], "evidence": [], "timeline": [], "tool_calls": 0})
+    shape = state["pattern"]["shape"]
+    expect_recheck = shape["recipients_in_window"] > 2
+    assert state["pattern"]["rechecked"] == expect_recheck
+    assert any(e["action"].startswith("rejected pattern") for e in state["timeline"]) == expect_recheck

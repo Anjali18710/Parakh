@@ -203,6 +203,23 @@ def structural_candidates(shape: dict, alert: dict) -> list[str]:
     return ids
 
 
+def pattern_conflict(pattern_id: str, shape: dict, alert: dict) -> str | None:
+    """Does the chosen pattern contradict the measured shape of the money flow? Returns the reason, or None."""
+    s, r = shape.get("senders_in_window", 0), shape.get("recipients_in_window", 0)
+    repeat_in = shape.get("inflow_from_repeat_senders", 0)
+    repeat_out = shape.get("outflow_to_repeat_recipients", 0)
+    rules = {
+        "fan_in": (r <= 2, f"fan_in forwards to one or two accounts, but money went to {r} recipients"),
+        "fan_out": (s <= 2, f"fan_out starts from one or two sources, but money came from {s} senders"),
+        "gather_scatter": (s >= 3 and r >= 3, f"gather_scatter needs 3+ senders and 3+ recipients, measured {s} and {r}"),
+        "layering_chain": (s <= 2 and r <= 2, f"a layering chain passes money one-to-one, measured {s} senders and {r} recipients"),
+        "wholesale": (repeat_in >= 0.5, f"wholesale trade has regular buyers, but only {repeat_in:.0%} of money came from repeat senders"),
+        "payroll": (repeat_out >= 0.5, f"payroll pays the same staff each month, but only {repeat_out:.0%} went to repeat recipients"),
+    }
+    ok, reason = rules.get(pattern_id, (True, ""))
+    return None if ok else reason
+
+
 @dataclass
 class Deps:
     llm: Any
@@ -261,18 +278,26 @@ def build_case_graph(deps: Deps, mode: Mode = "multi", human_review: bool = True
         cand_txt = "\n".join(f"- id={c['id']} ({c['kind']}): {c['description']} Tell-tale checks: {c['tell_tale_checks']}"
                              for c in candidates)
         model = deps.llm.with_structured_output(PatternFinding)
-        finding: PatternFinding = model.invoke(
-            [SystemMessage(prompts.PATTERN.format(candidates=cand_txt)),
-             HumanMessage(f"Measured facts (computed from the ledger, trust these over the narrative):\n"
-                          f"{json.dumps(shape)}\n\nInvestigator summary:\n{state.get('investigation_summary', '')}")],
-            config=config)
+        msgs = [SystemMessage(prompts.PATTERN.format(candidates=cand_txt)),
+                HumanMessage(f"Measured facts (computed from the ledger, trust these over the narrative):\n"
+                             f"{json.dumps(shape)}\n\nInvestigator summary:\n{state.get('investigation_summary', '')}")]
+        finding: PatternFinding = model.invoke(msgs, config=config)
+        events = []
+        # Pattern fact-check: the choice must fit the measured shape. One retry with the reason.
+        conflict = pattern_conflict(finding.pattern_id, shape, state["alert"])
+        if conflict:
+            events.append(_emit(config, _event("verifier", f"rejected pattern '{finding.pattern_id}'", conflict)))
+            msgs.append(HumanMessage(f"Your choice '{finding.pattern_id}' contradicts the measured facts: {conflict}. "
+                                     f"Choose again from the candidates."))
+            finding = model.invoke(msgs, config=config)
         data = finding.model_dump()
+        data["rechecked"] = bool(conflict)
         if data["pattern_id"] not in deps.library.ids():
             data["pattern_id"] = "none"
         data["candidates"] = [c["id"] for c in candidates]
         data["shape"] = shape
         return {"pattern": data,
-                "timeline": [_emit(config, _event("pattern", f"matched pattern '{data['pattern_id']}'",
+                "timeline": events + [_emit(config, _event("pattern", f"matched pattern '{data['pattern_id']}'",
                                                   {"confidence": data["confidence"], "ruled_out": data["ruled_out"]}))]}
 
     def write_report(state: CaseState, config) -> dict:
