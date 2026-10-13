@@ -126,7 +126,7 @@ frontend/        React + TypeScript dashboard (Vite)
 
 ## Tech
 
-LangGraph, LangChain, Groq (Llama 3.3 70B) or Gemini, FAISS, NetworkX, Pandas, FastAPI, Pydantic, MongoDB, React, TypeScript, Vite, pytest, GitHub Actions, Render, Vercel.
+LangGraph, LangChain, Groq (GPT-OSS 120B) or Gemini, FAISS, NetworkX, Pandas, FastAPI, Pydantic, MongoDB, React, TypeScript, Vite, pytest, GitHub Actions, Render, Vercel.
 
 ## Limitations
 
