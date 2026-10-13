@@ -19,6 +19,6 @@ services:
       - key: CORS_ORIGINS
         sync: false
       - key: GROQ_MODEL
-        value: llama-3.3-70b-versatile
+        value: openai/gpt-oss-120b
       - key: MAX_CASES_PER_RUN
         value: "5"
