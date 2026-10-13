@@ -146,5 +146,12 @@ class PatternLibrary:
                         "description": t.description, "tell_tale_checks": t.tell_tale_checks})
         return out
 
+    def get(self, typology_id: str) -> dict | None:
+        for t in self.typologies:
+            if t.id == typology_id:
+                return {"id": t.id, "name": t.name, "kind": t.kind, "similarity": None,
+                        "description": t.description, "tell_tale_checks": t.tell_tale_checks}
+        return None
+
     def ids(self) -> list[str]:
         return [t.id for t in self.typologies]

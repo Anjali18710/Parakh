@@ -283,3 +283,7 @@ button.link:hover:not(:disabled) { text-decoration: underline; }
 }
 .flow-scroll { overflow-x: auto; }
 @media (max-width: 760px) { .flow svg { min-width: 640px; } }
+.shape { margin-top: 12px; }
+.shape h4 { margin-top: 0; }
+.shape ul { margin: 0; padding: 0; list-style: none; display: flex; flex-wrap: wrap; gap: 6px; }
+.shape li { font-size: 0.82rem; background: var(--surface); border: 1px solid var(--line); border-radius: 6px; padding: 3px 9px; font-variant-numeric: tabular-nums; }

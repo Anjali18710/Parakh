@@ -23,6 +23,8 @@ Use your tools to gather evidence. Work like a detective:
 3. Check for loops (find_cycles) and for shared destinations or sources (common_counterparties).
 4. Actively test innocent explanations: regular salary payments, a stable group of trading partners,
    one transfer to a single investment account, slow family transfers, a loan followed by instalments.
+   The `relationships` section of the account profile measures repeat counterparties and how regular
+   the payments are; a business shows the same partners week after week, laundering shows fresh ones.
 
 You have a budget of {budget} tool calls. Stop as soon as you have enough evidence either way.
 
@@ -38,6 +40,14 @@ evidence with the candidate patterns below (retrieved from the bank's pattern li
 Innocent patterns are included on purpose: if an innocent explanation fits better, choose it.
 Check each candidate's tell-tale signs against the evidence; list the candidates you ruled out.
 
+Use the measured facts to tell look-alikes apart:
+- fan_in collects from many and forwards to one or two accounts; gather_scatter collects from many AND
+  pays out to many (recipients_in_window >= 3).
+- Money mostly from repeat senders, to one main recipient (largest_recipient_share near 1), on a regular
+  schedule (low gap_variation) over weeks is how a business trades (wholesale, payroll), not laundering.
+- Laundering uses fresh counterparties: repeat shares near 0.
+If the measured facts point to an innocent pattern, set kind to "innocent" even if the burst looked suspicious.
+
 Candidate patterns:
 {candidates}"""
 
@@ -52,6 +62,9 @@ Rules:
   together with the tool that was run to check them.
 - Do not mention search thresholds or tool settings in claims.
 - Write rupee amounts the Indian way (₹9,49,053 or ₹64.1 lakh), never in millions.
+- Each claim must add new information; do not restate another claim as a count.
+- Amounts in the summary must also appear in, or be totals of, the cited transactions.
+- If the pattern finding is innocent, the verdict is 'not_suspicious' unless the evidence clearly says otherwise.
 - Do not state anything you cannot cite. Fewer, correct claims are better than many shaky ones.
 - Verdict 'suspicious' only when the evidence shows a laundering pattern; otherwise 'not_suspicious'.
 - risk_score: 0-30 low, 31-69 unclear, 70-100 high.

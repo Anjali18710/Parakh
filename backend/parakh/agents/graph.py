@@ -32,6 +32,7 @@ from parakh.config import Settings
 from parakh.data.store import TransactionStore
 from parakh.fmt import inr
 from parakh.patterns.library import PatternLibrary
+from parakh.tools.flow import case_flow
 from parakh.tools.investigation import InvestigationTools
 
 Mode = Literal["multi", "single"]
@@ -172,6 +173,36 @@ def _evidence_text(state: CaseState, store: TransactionStore) -> str:
             f"Tool results:\n" + "\n".join(digests))
 
 
+def shape_facts(store: TransactionStore, itools: InvestigationTools, account: str, cited: list[str]) -> dict:
+    """Facts about the shape of the money flow, computed in code so the pattern agent cannot misread them."""
+    flow = case_flow(store, account, cited)
+    rel = (itools.account_profile(account) or {}).get("relationships", {})
+    return {
+        "senders_in_window": flow.get("senders", 0),
+        "recipients_in_window": flow.get("recipients", 0),
+        "share_passed_through": flow.get("passed_through", 0),
+        "activity_span_hours": flow.get("span_hours", 0),
+        **{k: v for k, v in rel.items() if k != "note"},
+    }
+
+
+def structural_candidates(shape: dict, alert: dict) -> list[str]:
+    """Patterns the flow's shape makes plausible, laundering and innocent alike."""
+    s, r = shape.get("senders_in_window", 0), shape.get("recipients_in_window", 0)
+    ids: list[str] = []
+    if s >= 3 and r >= 3:
+        ids += ["gather_scatter", "bipartite"]
+    if s >= 3 and r <= 2:
+        ids += ["fan_in", "wholesale"]
+    if r >= 3 and s <= 2:
+        ids += ["fan_out", "scatter_gather", "payroll"]
+    if s <= 2 and r <= 2:
+        ids += ["layering_chain", "investment", "property"]
+    if any((sig.get("name") if isinstance(sig, dict) else "") == "in_cycle" for sig in alert.get("signals", [])):
+        ids += ["cycle", "family"]
+    return ids
+
+
 @dataclass
 class Deps:
     llm: Any
@@ -213,21 +244,33 @@ def build_case_graph(deps: Deps, mode: Mode = "multi", human_review: bool = True
     def classify_pattern(state: CaseState, config) -> dict:
         # Search with both the investigator's story and the raw screening signals, so a pattern the
         # summary describes loosely (e.g. a hub that both collects and pays out) is still offered.
+        # Hybrid retrieval: patterns the flow's measured shape makes plausible, plus FAISS matches
+        # for the investigator's story and the screening signals.
+        cited = [t for e in state.get("evidence", []) for t in _TXN_ID.findall(e["result"])]
+        shape = shape_facts(deps.store, deps.itools, state["account"], cited)
         candidates: list[dict] = []
-        for query, k in ((state.get("investigation_summary", ""), 5), (_signals_text(state["alert"]), 4)):
+        for pid in structural_candidates(shape, state["alert"]):
+            c = deps.library.get(pid)
+            if c:
+                candidates.append(c)
+        for query, k in ((state.get("investigation_summary", ""), 4), (_signals_text(state["alert"]), 3)):
             for c in deps.library.search(query, k=k):
                 if c["id"] not in {x["id"] for x in candidates}:
                     candidates.append(c)
+        candidates = candidates[:8]
         cand_txt = "\n".join(f"- id={c['id']} ({c['kind']}): {c['description']} Tell-tale checks: {c['tell_tale_checks']}"
                              for c in candidates)
         model = deps.llm.with_structured_output(PatternFinding)
         finding: PatternFinding = model.invoke(
             [SystemMessage(prompts.PATTERN.format(candidates=cand_txt)),
-             HumanMessage(state.get("investigation_summary", ""))], config=config)
+             HumanMessage(f"Measured facts (computed from the ledger, trust these over the narrative):\n"
+                          f"{json.dumps(shape)}\n\nInvestigator summary:\n{state.get('investigation_summary', '')}")],
+            config=config)
         data = finding.model_dump()
         if data["pattern_id"] not in deps.library.ids():
             data["pattern_id"] = "none"
         data["candidates"] = [c["id"] for c in candidates]
+        data["shape"] = shape
         return {"pattern": data,
                 "timeline": [_emit(config, _event("pattern", f"matched pattern '{data['pattern_id']}'",
                                                   {"confidence": data["confidence"], "ruled_out": data["ruled_out"]}))]}

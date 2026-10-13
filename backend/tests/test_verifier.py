@@ -71,3 +71,23 @@ def test_checks_must_match_tools_actually_run(store):
     assert verify_report(report, store, acc, tools_used={"find_cycles"})["passed"]
     failed = verify_report(report, store, acc, tools_used={"account_profile"})
     assert not failed["passed"] and failed["checks_verified"] == 0
+
+
+def test_exact_figures_must_be_exact_but_rounded_ones_may_round(store):
+    acc, rows = _txns(store, 2)
+    total = float(rows.amount.sum())
+    def report(text):
+        return {"verdict": "not_suspicious", "summary": "", "claims": [
+            {"statement": text, "txn_ids": list(rows.txn_id), "accounts": [acc]}]}
+    from parakh.fmt import inr
+    assert verify_report(report(f"Sent {inr(total)} in total."), store, acc)["claims_verified"] == 1
+    assert verify_report(report(f"Sent {inr(total + 5934)} in total."), store, acc)["claims_verified"] == 0
+    if total >= 1e5:
+        assert verify_report(report(f"Sent about ₹{total / 1e5:.1f} lakh."), store, acc)["claims_verified"] == 1
+
+
+def test_summary_amounts_must_be_supported(store):
+    acc, rows = _txns(store, 2)
+    claims = [{"statement": "Payment.", "txn_ids": [t], "accounts": [acc]} for t in rows.txn_id]
+    bad = {"verdict": "suspicious", "summary": "It moved ₹12,34,56,789 overall.", "claims": claims}
+    assert any(i.startswith("summary") for i in verify_report(bad, store, acc)["issues"])

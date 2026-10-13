@@ -130,7 +130,14 @@ export interface CaseDetail extends Omit<CaseSummary, 'verdict' | 'risk_score' |
   alert: { account: string; score: number; signals: Signal[] }
   triage: { reason: string; priority: number } | null
   report: Report | null
-  pattern: { pattern_id: string; kind: string; confidence: number; reasoning: string; ruled_out: string[] } | null
+  pattern: {
+    pattern_id: string
+    kind: string
+    confidence: number
+    reasoning: string
+    ruled_out: string[]
+    shape?: Record<string, unknown>
+  } | null
   verification: Verification | null
   timeline: TimelineEvent[]
   investigation_summary: string | null

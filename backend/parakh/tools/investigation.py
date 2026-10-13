@@ -67,6 +67,43 @@ class InvestigationTools:
             "busiest_day": {"date": str(busiest_day)[:10], "total": round(float(daily.max()), 2),
                             "vs_median_day": round(float(daily.max() / max(daily.median(), 1)), 1)},
             "payment_formats": allt.payment_format.value_counts().to_dict(),
+            "relationships": self._relationships(inc, out),
+        }
+
+    @staticmethod
+    def _relationships(inc: pd.DataFrame, out: pd.DataFrame) -> dict:
+        """Long-run relationship facts that separate businesses from laundering.
+
+        Laundering uses fresh counterparties once; a distributor sees the same buyers week after
+        week and pays one supplier on a schedule; an employer pays the same staff every month.
+        """
+        def repeat_share(df: pd.DataFrame, col: str) -> float:
+            if df.empty:
+                return 0.0
+            days = df.groupby(col).timestamp.apply(lambda t: t.dt.normalize().nunique())
+            repeaters = days[days >= 3].index
+            return round(float(df[df[col].isin(repeaters)].amount.sum() / df.amount.sum()), 2)
+
+        def top_share(df: pd.DataFrame, col: str) -> float:
+            if df.empty:
+                return 0.0
+            return round(float(df.groupby(col).amount.sum().max() / df.amount.sum()), 2)
+
+        def schedule(df: pd.DataFrame) -> dict:
+            days = sorted(df.timestamp.dt.normalize().unique())
+            if len(days) < 3:
+                return {"active_days": len(days)}
+            gaps = pd.Series(pd.Series(days).diff().dropna().dt.days.values)
+            return {"active_days": len(days), "median_gap_days": float(gaps.median()),
+                    "gap_variation": round(float(gaps.std() / gaps.mean()), 2) if gaps.mean() else None}
+
+        return {
+            "inflow_from_repeat_senders": repeat_share(inc, "from_account"),
+            "outflow_to_repeat_recipients": repeat_share(out, "to_account"),
+            "largest_sender_share": top_share(inc, "from_account"),
+            "largest_recipient_share": top_share(out, "to_account"),
+            "outflow_schedule": schedule(out),
+            "note": "repeat = paid on 3+ different days; shares are of total money; low gap_variation = regular schedule",
         }
 
     # ------------------------------------------------------------------ 2

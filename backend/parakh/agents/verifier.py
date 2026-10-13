@@ -10,6 +10,11 @@ from __future__ import annotations
 import re
 
 from parakh.data.store import TransactionStore
+from parakh.fmt import inr
+
+
+def inr_plain(amount: float) -> str:
+    return inr(amount).lstrip("₹")
 
 _NUM = re.compile(
     r"(?:₹|rs\.?|inr)?\s*([0-9][0-9,]*(?:\.[0-9]+)?)\s*(crores?|cr\b|lakhs?|lacs?|l\b|k\b|million|mn\b|m\b)?", re.I)
@@ -21,7 +26,15 @@ _THRESHOLD = re.compile(r"(≥|>=|>|≤|<=|<|\babove|\bover|\bbelow|\bunder|\bat
 
 
 def _amounts_in_text(text: str) -> list[float]:
-    """Rupee amounts mentioned in a sentence (ignores small numbers like counts, hours and percentages)."""
+    return [v for v, _ in _amounts_with_tolerance(text)]
+
+
+def _amounts_with_tolerance(text: str) -> list[tuple[float, float]]:
+    """Rupee amounts in a sentence, each with how far it may be from the truth given how it is written.
+
+    "₹66,41,114" is an exact figure (allowed off by ₹1); "₹66.4 lakh" is rounded to 0.1 lakh
+    (allowed off by ₹5,000). Counts, hours, percentages, ids, dates and thresholds are ignored.
+    """
     # Drop things that look like numbers but are not amounts: ids, dates, times.
     text = re.sub(r"\b[A-Za-z]+[0-9]+\b", " ", text)
     text = re.sub(r"\b\d{4}-\d{2}-\d{2}(?:[ T]\d{2}:\d{2}(?::\d{2})?)?\b", " ", text)
@@ -41,21 +54,23 @@ def _amounts_in_text(text: str) -> list[float]:
         if not has_currency and not unit and value.is_integer() and 1900 <= value <= 2100:
             continue  # a year
         if value >= 1000:
-            found.append(value)
+            decimals = len(raw.split(".")[1]) if "." in raw else 0
+            unit_size = _UNITS.get(unit, 1)
+            tol = max(1.0, 0.5 * unit_size / (10 ** decimals)) if unit else 1.0
+            found.append((value, tol))
     return found
 
 
-def _close(a: float, b: float, tol: float = 0.01) -> bool:
-    return abs(a - b) <= tol * max(abs(b), 1.0)
-
-
-def _matches_amount(value: float, amounts: list[float]) -> bool:
+def _candidates(amounts: list[float]) -> list[float]:
     if not amounts:
-        return False
+        return []
     total = sum(amounts)
-    candidates = [total, max(amounts), min(amounts), total / len(amounts)] + amounts
-    # Allow rounding in text such as "₹48 lakh" for 47.9 lakh.
-    return any(_close(value, c, 0.02) for c in candidates)
+    return [total, max(amounts), min(amounts), total / len(amounts)] + amounts
+
+
+def _matches_amount(value: float, amounts: list[float], tol: float = 1.0) -> bool:
+    """True if `value` equals a cited amount, their total, max, min or average, within `tol` rupees."""
+    return any(abs(value - c) <= tol for c in _candidates(amounts))
 
 
 def verify_report(report: dict, store: TransactionStore, case_account: str,
@@ -63,6 +78,7 @@ def verify_report(report: dict, store: TransactionStore, case_account: str,
     """Check every cited claim against the ledger, and every 'nothing found' check against the tools actually run."""
     claim_results, issues = [], []
     cited_accounts: set[str] = set()
+    supported_amounts: list[float] = []
 
     for i, claim in enumerate(report.get("claims", [])):
         problems = []
@@ -79,11 +95,14 @@ def verify_report(report: dict, store: TransactionStore, case_account: str,
             if acc not in involved:
                 problems.append(f"account {acc} is not part of the cited transactions")
         amounts = [float(a) for a in txns.amount]
-        if claim.get("amount") is not None and not _matches_amount(float(claim["amount"]), amounts):
-            problems.append(f"amount ₹{float(claim['amount']):,.0f} does not match the cited transactions")
-        for value in _amounts_in_text(claim.get("statement", "")):
-            if not _matches_amount(value, amounts):
-                problems.append(f"amount ₹{value:,.0f} in the statement does not match the cited transactions")
+        supported_amounts.extend(_candidates(amounts))
+        if claim.get("amount") is not None and not _matches_amount(float(claim["amount"]), amounts, 1.0):
+            problems.append(f"amount ₹{inr_plain(float(claim['amount']))} does not match the cited transactions "
+                            f"(they total ₹{inr_plain(sum(amounts))})")
+        for value, tol in _amounts_with_tolerance(claim.get("statement", "")):
+            if not _matches_amount(value, amounts, tol):
+                problems.append(f"amount ₹{inr_plain(value)} in the statement does not match the cited transactions "
+                                f"(they total ₹{inr_plain(sum(amounts))})")
                 break
         if claim.get("count") is not None:
             n = int(claim["count"])
@@ -101,6 +120,11 @@ def verify_report(report: dict, store: TransactionStore, case_account: str,
     for r in claim_results:
         if not r["ok"]:
             issues.append(f"claim {r['index'] + 1}: " + "; ".join(r["problems"]))
+
+    # The summary may only quote amounts that some cited evidence supports.
+    for value, tol in _amounts_with_tolerance(report.get("summary", "")):
+        if not any(abs(value - c) <= tol for c in supported_amounts):
+            issues.append(f"summary: amount ₹{inr_plain(value)} is not supported by any cited transactions")
 
     # Negative findings ("no loops found") cannot cite transactions. They are valid only if the
     # investigator really ran the tool that would have found something.
