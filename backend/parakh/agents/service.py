@@ -173,7 +173,15 @@ class CaseService:
     def investigate(self, case_id: str, resume: dict | None = None) -> None:
         case = self.repo.get("cases", case_id)
         tracker = UsageTracker()
-        config = {"configurable": {"thread_id": case_id}, "callbacks": [tracker], "recursion_limit": 60}
+        live = list(case.get("timeline") or [])
+
+        def event_sink(event: dict) -> None:
+            # Save each agent step as it happens, so the dashboard can show the trail filling in live.
+            live.append(event)
+            self.repo.update("cases", case_id, {"timeline": live, "updated_at": now()})
+
+        config = {"configurable": {"thread_id": case_id, "event_sink": event_sink},
+                  "callbacks": [tracker], "recursion_limit": 60}
         graph = self.graph(case.get("mode", "multi"))
         if resume is None or resume.get("action") == "reinvestigate":
             self.repo.update("cases", case_id, {"status": "investigating", "updated_at": now()})

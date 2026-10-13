@@ -2,6 +2,13 @@ const inr = new Intl.NumberFormat('en-IN', { style: 'currency', currency: 'INR',
 
 export const rupees = (n: number) => inr.format(n)
 
+/** Short Indian amount: ₹68.7 lakh, ₹1.2 crore, ₹9,490. */
+export function lakhs(n: number): string {
+  if (n >= 1e7) return `₹${(n / 1e7).toFixed(n >= 1e8 ? 1 : 2)} crore`
+  if (n >= 1e5) return `₹${(n / 1e5).toFixed(n >= 1e6 ? 1 : 2)} lakh`
+  return inr.format(n)
+}
+
 export const count = (n: number) => new Intl.NumberFormat('en-IN').format(n)
 
 export function shortTime(iso: string): string {
@@ -58,6 +65,21 @@ export const AGENT_LABELS: Record<string, string> = {
   verifier: 'Fact-checker',
   reviewer: 'Human analyst',
   system: 'System',
+}
+
+export const TOOL_LABELS: Record<string, string> = {
+  account_profile: 'looked at the account profile',
+  list_transactions: 'listed transactions',
+  trace_money: 'followed the money',
+  find_cycles: 'checked for loops',
+  common_counterparties: 'checked for shared destinations',
+  search_patterns: 'searched the pattern library',
+}
+
+export function hoursText(h: number): string {
+  if (h < 1) return `${Math.round(h * 60)} min`
+  if (h < 48) return `${Math.round(h)} h`
+  return `${Math.round(h / 24)} days`
 }
 
 export const isWorking = (s: string) => s === 'queued' || s === 'investigating' || s === 'closing'

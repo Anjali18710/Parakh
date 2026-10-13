@@ -11,8 +11,13 @@ import re
 
 from parakh.data.store import TransactionStore
 
-_NUM = re.compile(r"(?:₹|rs\.?|inr)?\s*([0-9][0-9,]*(?:\.[0-9]+)?)\s*(crore|cr|lakh|lakhs|lac|l\b|k\b)?", re.I)
-_UNITS = {"crore": 1e7, "cr": 1e7, "lakh": 1e5, "lakhs": 1e5, "lac": 1e5, "l": 1e5, "k": 1e3}
+_NUM = re.compile(
+    r"(?:₹|rs\.?|inr)?\s*([0-9][0-9,]*(?:\.[0-9]+)?)\s*(crores?|cr\b|lakhs?|lacs?|l\b|k\b|million|mn\b|m\b)?", re.I)
+_UNITS = {"crore": 1e7, "crores": 1e7, "cr": 1e7, "lakh": 1e5, "lakhs": 1e5, "lac": 1e5, "lacs": 1e5, "l": 1e5,
+          "k": 1e3, "million": 1e6, "mn": 1e6, "m": 1e6}
+# "above ₹5 lakh", "≥ ₹5,00,000", "under ₹10 lakh" describe a threshold, not a fact about the money.
+_THRESHOLD = re.compile(r"(≥|>=|>|≤|<=|<|\babove|\bover|\bbelow|\bunder|\bat least|\bat most|\bmore than|"
+                        r"\bless than|\bexceeding|\bthreshold of|\bminimum of|\bup to)\s*$", re.I)
 
 
 def _amounts_in_text(text: str) -> list[float]:
@@ -29,6 +34,8 @@ def _amounts_in_text(text: str) -> list[float]:
         except ValueError:
             continue
         if text[m.end():m.end() + 1] == "%" or text[m.end():m.end() + 2] == " %":
+            continue
+        if _THRESHOLD.search(text[max(0, m.start() - 20):m.start()]):
             continue
         has_currency = bool(re.match(r"(₹|rs|inr)", m.group(0).strip(), re.I))
         if not has_currency and not unit and value.is_integer() and 1900 <= value <= 2100:
@@ -51,7 +58,9 @@ def _matches_amount(value: float, amounts: list[float]) -> bool:
     return any(_close(value, c, 0.02) for c in candidates)
 
 
-def verify_report(report: dict, store: TransactionStore, case_account: str) -> dict:
+def verify_report(report: dict, store: TransactionStore, case_account: str,
+                  tools_used: set[str] | None = None) -> dict:
+    """Check every cited claim against the ledger, and every 'nothing found' check against the tools actually run."""
     claim_results, issues = [], []
     cited_accounts: set[str] = set()
 
@@ -93,8 +102,21 @@ def verify_report(report: dict, store: TransactionStore, case_account: str) -> d
         if not r["ok"]:
             issues.append(f"claim {r['index'] + 1}: " + "; ".join(r["problems"]))
 
+    # Negative findings ("no loops found") cannot cite transactions. They are valid only if the
+    # investigator really ran the tool that would have found something.
+    check_results = []
+    for i, check in enumerate(report.get("checks", [])):
+        ok = tools_used is None or check.get("tool") in tools_used
+        check_results.append({"index": i, "ok": ok,
+                              "problems": [] if ok else [f"tool '{check.get('tool')}' was never run in this case"]})
+        if not ok:
+            issues.append(f"check {i + 1}: tool '{check.get('tool')}' was never run in this case")
+
     return {
         "passed": not issues,
+        "checks_total": len(check_results),
+        "checks_verified": sum(r["ok"] for r in check_results),
+        "check_results": check_results,
         "claims_total": len(claim_results),
         "claims_verified": verified,
         "claim_results": claim_results,

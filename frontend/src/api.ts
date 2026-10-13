@@ -68,12 +68,18 @@ export interface Claim {
   count: number | null
 }
 
+export interface Check {
+  description: string
+  tool: string
+}
+
 export interface Report {
   verdict: 'suspicious' | 'not_suspicious'
   risk_score: number
   pattern_id: string
   summary: string
   claims: Claim[]
+  checks?: Check[]
   recommended_action: string
 }
 
@@ -84,6 +90,33 @@ export interface Verification {
   claim_results: { index: number; ok: boolean; problems: string[] }[]
   issues: string[]
   enforced: boolean
+  checks_total?: number
+  checks_verified?: number
+  check_results?: { index: number; ok: boolean; problems: string[] }[]
+}
+
+export interface FlowParty {
+  account: string
+  total: number
+  count: number
+  cited: boolean
+  txn_ids: string[]
+  first: string
+  last: string
+  other?: boolean
+}
+
+export interface Flow {
+  account: string
+  window?: { start: string; end: string }
+  total_in: number
+  total_out: number
+  passed_through: number
+  senders: number
+  recipients: number
+  span_hours: number
+  inflows: FlowParty[]
+  outflows: FlowParty[]
 }
 
 export interface TimelineEvent {
