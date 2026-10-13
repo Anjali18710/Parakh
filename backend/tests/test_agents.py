@@ -95,3 +95,19 @@ def test_rules_report_shape(store):
     r = rules_report(alert)
     assert r["verdict"] in {"suspicious", "not_suspicious"}
     assert r["claims"]
+
+
+def test_structural_candidates_follow_the_shape_of_the_flow():
+    from parakh.agents.graph import structural_candidates
+    assert "gather_scatter" in structural_candidates({"senders_in_window": 8, "recipients_in_window": 6}, {})
+    many_to_one = structural_candidates({"senders_in_window": 13, "recipients_in_window": 1}, {})
+    assert {"fan_in", "wholesale"} <= set(many_to_one)
+    loop = structural_candidates({"senders_in_window": 1, "recipients_in_window": 1},
+                                 {"signals": [{"name": "in_cycle"}]})
+    assert "cycle" in loop and "family" in loop
+
+
+def test_relationships_separate_business_from_laundering(store):
+    tools = InvestigationTools(store)
+    rel = tools.account_profile(store.df.to_account.value_counts().index[0])["relationships"]
+    assert 0 <= rel["inflow_from_repeat_senders"] <= 1 and "outflow_schedule" in rel

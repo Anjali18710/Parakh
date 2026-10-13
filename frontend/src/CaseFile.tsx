@@ -64,6 +64,28 @@ function Trail({ events, live }: { events: TimelineEvent[]; live: boolean }) {
   )
 }
 
+const pct = (v: unknown) => `${Math.round(Number(v) * 100)}%`
+
+/** The measured facts the pattern agent was given, so the analyst can check its reasoning. */
+function ShapeFacts({ shape }: { shape: Record<string, unknown> }) {
+  const sched = (shape.outflow_schedule ?? {}) as { median_gap_days?: number; gap_variation?: number | null }
+  const regular = sched.gap_variation != null && sched.gap_variation < 0.5
+  const facts = [
+    `${shape.senders_in_window} sender${shape.senders_in_window === 1 ? '' : 's'}, ${shape.recipients_in_window} recipient${shape.recipients_in_window === 1 ? '' : 's'} in the window`,
+    `${pct(shape.inflow_from_repeat_senders)} of money in from repeat senders`,
+    `${pct(shape.largest_recipient_share)} of money out to the biggest recipient`,
+    sched.median_gap_days != null
+      ? `pays out every ${sched.median_gap_days} days, ${regular ? 'on a regular schedule' : 'irregularly'}`
+      : 'too few payment days to judge a schedule',
+  ]
+  return (
+    <div className="shape">
+      <h4>Measured from the ledger</h4>
+      <ul>{facts.map((f) => <li key={f}>{f}</li>)}</ul>
+    </div>
+  )
+}
+
 export function CaseFile({ caseId, onChanged }: { caseId: string; onChanged: () => void }) {
   const [c, setCase] = useState<CaseDetail | null>(null)
   const [txns, setTxns] = useState<Txn[]>([])
@@ -324,6 +346,7 @@ export function CaseFile({ caseId, onChanged }: { caseId: string; onChanged: () 
                   <strong>{patternName(c.pattern.pattern_id)}</strong>, {Math.round(c.pattern.confidence * 100)}% confident.{' '}
                   {c.pattern.reasoning}
                 </p>
+                {c.pattern.shape && <ShapeFacts shape={c.pattern.shape} />}
                 {c.pattern.ruled_out.length > 0 && (
                   <p className="aside">Ruled out: {c.pattern.ruled_out.map(patternName).join(', ')}</p>
                 )}
