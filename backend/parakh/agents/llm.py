@@ -17,7 +17,11 @@ def get_llm(cfg: Settings | None = None):
         return ChatGoogleGenerativeAI(model=cfg.gemini_model, temperature=cfg.temperature)
     from langchain_groq import ChatGroq
 
-    return ChatGroq(model=cfg.groq_model, temperature=cfg.temperature, max_retries=4)
+    extra = {}
+    if "gpt-oss" in cfg.groq_model:
+        # Reasoning tokens count against the rate limit; "low" is plenty for tool-driven investigation.
+        extra["reasoning_effort"] = cfg.reasoning_effort
+    return ChatGroq(model=cfg.groq_model, temperature=cfg.temperature, max_retries=6, **extra)
 
 
 class UsageTracker(BaseCallbackHandler):

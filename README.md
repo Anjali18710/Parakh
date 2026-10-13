@@ -26,11 +26,19 @@ flowchart LR
 | Agent | What it does |
 |---|---|
 | **Triage** | Reads rule alerts in batches and decides which deserve a full investigation, within a case budget. |
-| **Investigator** | A tool-calling loop with a hard budget (default 8 calls). Uses five tools: account profile, transaction search, time-ordered money tracing, loop detection and shared-destination detection. Is told to actively test innocent explanations. |
+| **Investigator** | A tool-calling loop with a hard budget (default 6 calls). Uses five tools: account profile, transaction search, time-ordered money tracing, loop detection and shared-destination detection. Is told to actively test innocent explanations. |
 | **Pattern agent** | Retrieves the closest typologies from a FAISS index that contains laundering patterns *and* innocent look-alikes (payroll, wholesale trade, investment transfers, property purchases, family transfers), then picks one and lists what it ruled out. |
 | **Report agent** | Writes a structured case file. Every claim must cite transaction IDs. |
-| **Fact-checker** | Plain Python. Checks that cited transactions exist, involve the accounts named, and that every amount and count matches. Failing reports go back to the report agent (up to 2 retries). |
+| **Fact-checker** | Plain Python. Checks that cited transactions exist, involve the accounts named, and that every amount and count matches. "Nothing found" results (no loops, no shared destinations) are listed separately and accepted only if the investigator really ran the tool that would have found them. Failing reports go back to the report agent (up to 2 retries). |
 | **Human review** | The LangGraph run pauses (`interrupt`). The analyst agrees, overrules, or sends the agents back with instructions, which resumes the same run. |
+
+### The analyst dashboard
+
+- **Summary strip:** money in, money out, share passed straight through, time span, claims verified.
+- **Where the money went:** a flow graph of senders and recipients around the case account. Band width is the amount; gold bands are transactions the report cites, and clicking one jumps to it.
+- **Live agent trail:** while a case runs, each tool call appears as it happens. Afterwards the trail collapses to a one-line story with the full audit log one click away.
+- **Evidence:** every claim with its fact-check result, plus what was checked and not found.
+- **Decision:** agree, overrule, or send the agents back with a note.
 
 ### Design decisions worth knowing
 
@@ -38,6 +46,7 @@ flowchart LR
 - **Fact-checking is code, not another LLM.** Claims are structured (`statement`, `txn_ids`, `accounts`, `amount`, `count`), so they can be checked with arithmetic. The checker understands Indian amounts (₹9.5 lakh, ₹1.2 crore, ₹66,41,114) and ignores dates and IDs.
 - **No label leakage.** Ground-truth labels are split off when data loads and are only visible to the evaluation code. Synthetic account IDs are neutral (`AC123456`), so names can't reveal which accounts are mules.
 - **Hard budgets everywhere.** Tool calls per case, report retries and cases per run are capped, so cost per case is predictable.
+- **Lean prompts.** The report agent gets a compact ledger of every transaction the tools surfaced, looked up again in the data, rather than raw tool output. This cut tokens per case sharply, which matters on Groq's free tier (8,000 tokens per minute).
 - **Survives restarts.** If the server restarts while a case waits for review, the decision is still applied from the stored case; a "dig further" request opens a fresh investigation.
 
 ## Data
@@ -105,6 +114,8 @@ npm run dev
 1. **Database:** create a free MongoDB Atlas cluster and copy its connection string. Without one, cases are kept in memory.
 2. **API on Render:** New > Blueprint > choose this repository. `render.yaml` sets everything up; enter `GROQ_API_KEY`, `MONGODB_URI` and `CORS_ORIGINS` (your Vercel URL) when asked.
 3. **Dashboard on Vercel:** import the repository, set the root directory to `frontend`, and add `VITE_API_URL` = your Render URL.
+
+Groq's free tier allows about 8,000 tokens per minute and 200,000 per day for `openai/gpt-oss-120b`, so investigate a few cases at a time.
 
 Render's free plan sleeps after 15 minutes without traffic, so the first request afterwards takes about a minute.
 

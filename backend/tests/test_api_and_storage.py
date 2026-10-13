@@ -83,3 +83,14 @@ def test_ibm_loader(tmp_path):
     assert list(df.columns[:3]) == ["txn_id", "timestamp", "from_account"]
     assert df.loc[df.from_account == "10-A1"].iloc[0].pattern == "fan_out"
     assert (df.pattern == "unlabelled").sum() == 1
+
+
+def test_case_flow(store):
+    with client(store) as c:
+        run = c.post("/api/runs", json={"max_cases": 1}).json()
+        wait(c, f"/api/runs/{run['_id']}", lambda r: r["status"] in ("done", "failed"))
+        cid = c.get("/api/cases").json()[0]["_id"]
+        flow = c.get(f"/api/cases/{cid}/flow").json()
+        assert flow["inflows"] or flow["outflows"]
+        assert flow["total_in"] >= 0 and 0 <= flow["passed_through"] <= 1
+        assert any(p["cited"] for p in flow["inflows"] + flow["outflows"])

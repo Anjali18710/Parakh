@@ -26,10 +26,12 @@ Use your tools to gather evidence. Work like a detective:
 
 You have a budget of {budget} tool calls. Stop as soon as you have enough evidence either way.
 
-When you are done, reply WITHOUT calling a tool, with an evidence summary:
+When you are done, reply WITHOUT calling a tool, with an evidence summary in plain sentences (no tables,
+no markdown headings), under 250 words:
 - what the account did, in time order, with amounts and transaction ids for every key fact
-- which laundering pattern or innocent explanation fits best and why
-- anything that does not fit"""
+- what you checked and did not find
+- which laundering pattern or innocent explanation fits best and why, and anything that does not fit
+Write rupee amounts the Indian way (₹9,49,053 or ₹64.1 lakh), never in millions."""
 
 PATTERN = """You are a typology specialist in an anti-money-laundering team. Compare the investigator's
 evidence with the candidate patterns below (retrieved from the bank's pattern library) and pick the best match.
@@ -42,10 +44,14 @@ Candidate patterns:
 REPORT = """You are writing the case file for account {account}, to be read by a human analyst.
 
 Rules:
-- Every claim must cite the transaction ids that prove it, copied exactly from the evidence.
+- `claims` are positive facts about money that actually moved. Every claim must cite the transaction ids that prove it, copied exactly from the evidence.
 - If a claim states an amount, the amount must equal the cited transaction's amount or the exact total of
   the cited transactions. If it states a count, it must equal the number of cited transactions or accounts.
 - List in `accounts` only accounts that appear in the cited transactions.
+- Things looked for but not found ("no loops", "no shared destinations") go in `checks`, never in `claims`,
+  together with the tool that was run to check them.
+- Do not mention search thresholds or tool settings in claims.
+- Write rupee amounts the Indian way (₹9,49,053 or ₹64.1 lakh), never in millions.
 - Do not state anything you cannot cite. Fewer, correct claims are better than many shaky ones.
 - Verdict 'suspicious' only when the evidence shows a laundering pattern; otherwise 'not_suspicious'.
 - risk_score: 0-30 low, 31-69 unclear, 70-100 high.
@@ -53,7 +59,8 @@ Rules:
 
 REPORT_RETRY = """Your previous report failed fact-checking. Problems found:
 {issues}
-Fix or remove each failing claim. Only cite transaction ids that appear in the evidence."""
+Fix or remove each failing claim. Only cite transaction ids that appear in the evidence. Move anything that
+was not found into `checks`."""
 
 SINGLE_AGENT = """You are an anti-money-laundering analyst investigating account {account}.
 

@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import operator
+import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Annotated, Any, Callable, Literal, TypedDict
@@ -29,12 +30,15 @@ from parakh.agents.schemas import CaseReport, PatternFinding
 from parakh.agents.verifier import verify_report
 from parakh.config import Settings
 from parakh.data.store import TransactionStore
+from parakh.fmt import inr
 from parakh.patterns.library import PatternLibrary
 from parakh.tools.investigation import InvestigationTools
 
 Mode = Literal["multi", "single"]
-TOOL_RESULT_CHARS = 3500
-EVIDENCE_CHARS = 14000
+TOOL_RESULT_CHARS = 2000   # every tool result is re-sent on each later step, so it is kept small
+DIGEST_CHARS = 500
+LEDGER_ROWS = 45
+_TXN_ID = re.compile(r"\bT\d{7,8}\b")
 
 
 class CaseState(TypedDict, total=False):
@@ -61,6 +65,17 @@ def _now() -> str:
 
 def _event(agent: str, action: str, detail: Any = None) -> dict:
     return {"time": _now(), "agent": agent, "action": action, "detail": detail}
+
+
+def _emit(config: dict | None, event: dict) -> dict:
+    """Send an event to the live trail (if the caller provided a sink) and return it for the state."""
+    sink = ((config or {}).get("configurable") or {}).get("event_sink")
+    if sink:
+        try:
+            sink(event)
+        except Exception:  # the live trail is a convenience; never let it break an investigation
+            pass
+    return event
 
 
 def _text(msg) -> str:
@@ -117,10 +132,10 @@ def run_tool_loop(llm, tools: list[StructuredTool], system: str, user: str, budg
                 result = tool.invoke(call["args"]) if tool else {"error": f"unknown tool {call['name']}"}
             except Exception as exc:  # bad arguments from the model should not crash the case
                 result = {"error": f"{type(exc).__name__}: {exc}"}
-            text = json.dumps(result, default=str)[:TOOL_RESULT_CHARS]
+            text = json.dumps(result, default=str, separators=(",", ":"), ensure_ascii=False)[:TOOL_RESULT_CHARS]
             msgs.append(ToolMessage(text, tool_call_id=call["id"]))
             evidence.append({"tool": call["name"], "args": call["args"], "result": text})
-            events.append(_event(agent_name, f"called {call['name']}", call["args"]))
+            events.append(_emit(config, _event(agent_name, f"called {call['name']}", call["args"])))
         if calls >= budget:
             msgs.append(HumanMessage("Your tool budget is used up. Write your evidence summary now."))
             ai = llm.invoke(msgs, config=config)
@@ -129,12 +144,32 @@ def run_tool_loop(llm, tools: list[StructuredTool], system: str, user: str, budg
     return _text(msgs[-1]), evidence, events, calls
 
 
-def _evidence_text(state: CaseState) -> str:
-    parts = [f"Investigator summary:\n{state.get('investigation_summary', '')}"]
+def _ledger(state: CaseState, store: TransactionStore) -> str:
+    """Every transaction any tool surfaced, looked up again in the store so the report cites exact figures."""
+    ids: list[str] = []
     for e in state.get("evidence", []):
-        parts.append(f"[{e['tool']} {json.dumps(e['args'])}]\n{e['result']}")
-    text = "\n\n".join(parts)
-    return text[:EVIDENCE_CHARS]
+        ids += _TXN_ID.findall(e["result"])
+    ids += _TXN_ID.findall(state.get("investigation_summary", ""))
+    rows = store.get_txns(list(dict.fromkeys(ids)))
+    if rows.empty:
+        return "(no transactions surfaced)"
+    acc = state["account"]
+    # Keep the case account's own transactions first, then the largest of the rest.
+    rows = rows.assign(own=(rows.from_account == acc) | (rows.to_account == acc))
+    rows = rows.sort_values(["own", "amount"], ascending=[False, False]).head(LEDGER_ROWS).sort_values("timestamp")
+    return "\n".join(f"{r.txn_id} | {r.timestamp:%Y-%m-%d %H:%M} | {r.from_account} -> {r.to_account} | {inr(r.amount)}"
+                     f" ({r.amount:.2f})" for r in rows.itertuples())
+
+
+def _evidence_text(state: CaseState, store: TransactionStore) -> str:
+    digests = []
+    for e in state.get("evidence", []):
+        if e["tool"] in ("account_profile", "find_cycles", "common_counterparties"):
+            body = _TXN_ID.sub("", e["result"]) if e["tool"] != "account_profile" else e["result"]
+            digests.append(f"[{e['tool']}] {body[:DIGEST_CHARS]}")
+    return (f"Investigator summary:\n{state.get('investigation_summary', '')}\n\n"
+            f"Ledger (txn_id | time | from -> to | amount):\n{_ledger(state, store)}\n\n"
+            f"Tool results:\n" + "\n".join(digests))
 
 
 @dataclass
@@ -162,19 +197,27 @@ def build_case_graph(deps: Deps, mode: Mode = "multi", human_review: bool = True
             system = prompts.INVESTIGATOR.format(account=state["account"], signals=_signals_text(state["alert"]),
                                                  notes=notes_txt, budget=deps.cfg.max_tool_calls)
             tools, name = inv_tools, "investigator"
+        started = _emit(config, _event(name, "started investigation"))
         summary, evidence, events, calls = run_tool_loop(
             deps.llm, tools, system, f"Investigate account {state['account']}.", deps.cfg.max_tool_calls, config, name)
+        finished = _emit(config, _event(name, "finished investigation", summary[:700]))
         return {
             "investigation_summary": summary,
             "evidence": evidence,
-            "timeline": [_event(name, "started investigation")] + events + [_event(name, "finished investigation", summary[:600])],
+            "timeline": [started] + events + [finished],
             "tool_calls": state.get("tool_calls", 0) + calls,
             "report_attempts": 0,
             "verification": None,
         }
 
     def classify_pattern(state: CaseState, config) -> dict:
-        candidates = deps.library.search(state.get("investigation_summary", ""), k=5)
+        # Search with both the investigator's story and the raw screening signals, so a pattern the
+        # summary describes loosely (e.g. a hub that both collects and pays out) is still offered.
+        candidates: list[dict] = []
+        for query, k in ((state.get("investigation_summary", ""), 5), (_signals_text(state["alert"]), 4)):
+            for c in deps.library.search(query, k=k):
+                if c["id"] not in {x["id"] for x in candidates}:
+                    candidates.append(c)
         cand_txt = "\n".join(f"- id={c['id']} ({c['kind']}): {c['description']} Tell-tale checks: {c['tell_tale_checks']}"
                              for c in candidates)
         model = deps.llm.with_structured_output(PatternFinding)
@@ -186,8 +229,8 @@ def build_case_graph(deps: Deps, mode: Mode = "multi", human_review: bool = True
             data["pattern_id"] = "none"
         data["candidates"] = [c["id"] for c in candidates]
         return {"pattern": data,
-                "timeline": [_event("pattern", f"matched pattern '{data['pattern_id']}'",
-                                    {"confidence": data["confidence"], "ruled_out": data["ruled_out"]})]}
+                "timeline": [_emit(config, _event("pattern", f"matched pattern '{data['pattern_id']}'",
+                                                  {"confidence": data["confidence"], "ruled_out": data["ruled_out"]}))]}
 
     def write_report(state: CaseState, config) -> dict:
         attempts = state.get("report_attempts", 0)
@@ -198,21 +241,24 @@ def build_case_graph(deps: Deps, mode: Mode = "multi", human_review: bool = True
         else:
             context = "Allowed pattern ids: " + ", ".join(deps.library.ids() + ["none"])
         msgs = [SystemMessage(system),
-                HumanMessage(f"Screening signals:\n{_signals_text(state['alert'])}\n\n{context}\n\nEvidence:\n{_evidence_text(state)}")]
+                HumanMessage(f"Screening signals:\n{_signals_text(state['alert'])}\n\n{context}\n\n"
+                             f"Evidence:\n{_evidence_text(state, deps.store)}")]
         if attempts > 0 and state.get("verification"):
             msgs.append(HumanMessage(prompts.REPORT_RETRY.format(issues="\n".join(state["verification"]["issues"]))))
         report: CaseReport = deps.llm.with_structured_output(CaseReport).invoke(msgs, config=config)
         data = report.model_dump()
         label = "rewrote report after fact-check" if attempts else "wrote report"
         return {"report": data, "report_attempts": attempts + 1,
-                "timeline": [_event("report", label, {"verdict": data["verdict"], "claims": len(data["claims"])})]}
+                "timeline": [_emit(config, _event("report", label, {"verdict": data["verdict"], "claims": len(data["claims"]),
+                                                                    "checks": len(data.get("checks", []))}))]}
 
-    def verify(state: CaseState) -> dict:
-        result = verify_report(state["report"], deps.store, state["account"])
+    def verify(state: CaseState, config) -> dict:
+        tools_used = {e["tool"] for e in state.get("evidence", [])}
+        result = verify_report(state["report"], deps.store, state["account"], tools_used)
         result["enforced"] = enforce_verifier
         msg = "all claims verified" if result["passed"] else f"{len(result['issues'])} problem(s) found"
         return {"verification": result,
-                "timeline": [_event("verifier", msg, result["issues"][:5])]}
+                "timeline": [_emit(config, _event("verifier", msg, result["issues"][:5]))]}
 
     def after_verify(state: CaseState) -> str:
         v = state["verification"]
@@ -220,11 +266,12 @@ def build_case_graph(deps: Deps, mode: Mode = "multi", human_review: bool = True
             return "write_report"
         return "human_review" if human_review else "finalize"
 
-    def human_review_node(state: CaseState) -> dict:
+    def human_review_node(state: CaseState, config) -> dict:
         decision = interrupt({"case_id": state.get("case_id"), "report": state.get("report"),
                               "verification": state.get("verification")})
         update: dict = {"decision": decision,
-                        "timeline": [_event("reviewer", f"decided: {decision.get('action')}", decision.get("note"))]}
+                        "timeline": [_emit(config, _event("reviewer", f"decided: {decision.get('action')}",
+                                                          decision.get("note")))]}
         if decision.get("action") == "reinvestigate" and decision.get("note"):
             update["analyst_notes"] = [decision["note"]]
         return update

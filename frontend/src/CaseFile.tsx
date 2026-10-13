@@ -1,15 +1,9 @@
 import { useCallback, useEffect, useState } from 'react'
-import { api, errorMessage, type CaseDetail, type Txn } from './api'
-import { AGENT_LABELS, SIGNAL_LABELS, STATUS_LABELS, isWorking, patternName, rupees, shortTime } from './format'
-
-const TOOL_LABELS: Record<string, string> = {
-  account_profile: 'looked at the account profile',
-  list_transactions: 'listed transactions',
-  trace_money: 'followed the money',
-  find_cycles: 'checked for loops',
-  common_counterparties: 'checked for shared destinations',
-  search_patterns: 'searched the pattern library',
-}
+import { api, errorMessage, type CaseDetail, type Flow, type TimelineEvent, type Txn } from './api'
+import { FlowGraph } from './FlowGraph'
+import {
+  AGENT_LABELS, SIGNAL_LABELS, STATUS_LABELS, TOOL_LABELS, hoursText, isWorking, lakhs, patternName, rupees, shortTime,
+} from './format'
 
 function describe(action: string): string {
   const m = action.match(/^called (\w+)$/)
@@ -18,19 +12,64 @@ function describe(action: string): string {
 
 function detailText(detail: unknown): string | null {
   if (detail == null || detail === '') return null
-  if (typeof detail === 'string') return detail
+  if (typeof detail === 'string') return detail.replace(/[*#|]+/g, ' ').replace(/\s{2,}/g, ' ').trim()
   if (Array.isArray(detail)) return detail.length ? detail.join('; ') : null
   if (typeof detail === 'object') {
     const entries = Object.entries(detail as Record<string, unknown>).filter(([k]) => k !== 'account')
-    return entries.length ? entries.map(([k, v]) => `${k.replace(/_/g, ' ')}: ${Array.isArray(v) ? v.join(', ') || 'none' : v}`).join(', ') : null
+    return entries.length
+      ? entries.map(([k, v]) => `${k.replace(/_/g, ' ')}: ${Array.isArray(v) ? v.join(', ') || 'none' : v}`).join(', ')
+      : null
   }
   return String(detail)
+}
+
+/** One line that tells the story of the agents' work. */
+function trailStory(c: CaseDetail): string {
+  const t = c.timeline
+  const tools = t.filter((e) => e.action.startsWith('called ')).length
+  const rewrites = t.filter((e) => e.action.startsWith('rewrote')).length
+  const v = c.verification
+  const parts = [`${tools} tool call${tools === 1 ? '' : 's'}`]
+  if (c.pattern) parts.push(`matched ${patternName(c.pattern.pattern_id).toLowerCase()}`)
+  if (rewrites) parts.push(`report rewritten ${rewrites} time${rewrites === 1 ? '' : 's'} after fact-checking`)
+  if (v) parts.push(v.passed ? 'every claim verified' : `${v.claims_total - v.claims_verified} claim(s) still unverified`)
+  return parts.join(', ')
+}
+
+function Trail({ events, live }: { events: TimelineEvent[]; live: boolean }) {
+  return (
+    <ol className={`trail ${live ? 'live' : ''}`}>
+      {events.map((e, i) => {
+        const d = detailText(e.detail)
+        const latest = live && i === events.length - 1
+        return (
+          <li key={i} className={`a-${e.agent} ${latest ? 'latest' : ''}`}>
+            <time>{shortTime(e.time)}</time>
+            <div>
+              <strong>{AGENT_LABELS[e.agent] ?? e.agent}</strong> {describe(e.action)}
+              {d && <p className="clamp">{d}</p>}
+            </div>
+          </li>
+        )
+      })}
+      {live && (
+        <li className="next">
+          <time />
+          <div>
+            <span className="pulse" aria-hidden="true" /> Working on the next step…
+          </div>
+        </li>
+      )}
+    </ol>
+  )
 }
 
 export function CaseFile({ caseId, onChanged }: { caseId: string; onChanged: () => void }) {
   const [c, setCase] = useState<CaseDetail | null>(null)
   const [txns, setTxns] = useState<Txn[]>([])
-  const [highlight, setHighlight] = useState<string | null>(null)
+  const [flow, setFlow] = useState<Flow | null>(null)
+  const [highlight, setHighlight] = useState<string[]>([])
+  const [trailOpen, setTrailOpen] = useState(false)
   const [note, setNote] = useState('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -39,10 +78,12 @@ export function CaseFile({ caseId, onChanged }: { caseId: string; onChanged: () 
     try {
       const r = await api.get<CaseDetail>(`/cases/${caseId}`)
       setCase(r.data)
-      if (r.data.report) {
-        const t = await api.get<Txn[]>(`/cases/${caseId}/transactions`)
-        setTxns(t.data)
-      }
+      const [f, t] = await Promise.all([
+        api.get<Flow>(`/cases/${caseId}/flow`),
+        r.data.report ? api.get<Txn[]>(`/cases/${caseId}/transactions`) : Promise.resolve({ data: [] as Txn[] }),
+      ])
+      setFlow(f.data)
+      setTxns(t.data)
     } catch (err) {
       setError(errorMessage(err))
     }
@@ -52,11 +93,12 @@ export function CaseFile({ caseId, onChanged }: { caseId: string; onChanged: () 
     load()
   }, [load])
 
+  const working = c ? isWorking(c.status) : false
   useEffect(() => {
-    if (!c || !isWorking(c.status)) return
-    const id = window.setInterval(load, 2500)
+    if (!working) return
+    const id = window.setInterval(load, 2000)
     return () => window.clearInterval(id)
-  }, [c, load])
+  }, [working, load])
 
   async function decide(action: 'approve' | 'reject' | 'reinvestigate') {
     if (action === 'reinvestigate' && !note.trim()) {
@@ -77,16 +119,23 @@ export function CaseFile({ caseId, onChanged }: { caseId: string; onChanged: () 
     }
   }
 
-  function showTxn(id: string) {
-    setHighlight(id)
-    document.getElementById(`txn-${id}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+  function showTxns(ids: string[]) {
+    const present = ids.filter((id) => document.getElementById(`txn-${id}`))
+    setHighlight(present)
+    if (present[0]) document.getElementById(`txn-${present[0]}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' })
   }
 
-  if (!c) return <section className="casefile">{error ? <p className="field-error">{error}</p> : <p className="loading">Opening case…</p>}</section>
+  if (!c) {
+    return (
+      <section className="casefile">
+        {error ? <p className="field-error pad">{error}</p> : <p className="loading">Opening case…</p>}
+      </section>
+    )
+  }
 
   const r = c.report
   const v = c.verification
-  const working = isWorking(c.status)
+  const checks = r?.checks ?? []
 
   return (
     <section className="casefile" aria-live="polite">
@@ -112,6 +161,36 @@ export function CaseFile({ caseId, onChanged }: { caseId: string; onChanged: () 
         )}
       </header>
 
+      {flow && (flow.inflows.length > 0 || flow.outflows.length > 0) && (
+        <dl className="strip">
+          <div>
+            <dt>Money in</dt>
+            <dd>{lakhs(flow.total_in)}</dd>
+            <span>from {flow.senders} account{flow.senders === 1 ? '' : 's'}</span>
+          </div>
+          <div>
+            <dt>Money out</dt>
+            <dd>{lakhs(flow.total_out)}</dd>
+            <span>to {flow.recipients} account{flow.recipients === 1 ? '' : 's'}</span>
+          </div>
+          <div>
+            <dt>Passed straight through</dt>
+            <dd>{Math.round(flow.passed_through * 100)}%</dd>
+            <span>of what came in</span>
+          </div>
+          <div>
+            <dt>Time span</dt>
+            <dd>{flow.span_hours ? hoursText(flow.span_hours) : '–'}</dd>
+            <span>{r ? 'of the cited activity' : 'busiest period'}</span>
+          </div>
+          <div>
+            <dt>Evidence</dt>
+            <dd>{v ? `${v.claims_verified}/${v.claims_total}` : '–'}</dd>
+            <span>{v ? 'claims verified' : 'waiting for report'}</span>
+          </div>
+        </dl>
+      )}
+
       {c.status === 'failed' && <p className="banner bad">The agents stopped with an error: {c.error}</p>}
 
       <div className="case-body">
@@ -132,9 +211,17 @@ export function CaseFile({ caseId, onChanged }: { caseId: string; onChanged: () 
           {c.triage && <p className="aside">Triage agent: {c.triage.reason}</p>}
         </section>
 
-        {working && !r && (
-          <section className="working">
-            <p>The agents are investigating. Their steps appear in the trail below as they happen.</p>
+        {working && (
+          <section className="at-work">
+            <h3>Agents at work</h3>
+            <Trail events={c.timeline} live />
+          </section>
+        )}
+
+        {flow && (flow.inflows.length > 0 || flow.outflows.length > 0) && (
+          <section>
+            <h3>Where the money went</h3>
+            <FlowGraph flow={flow} onPick={showTxns} />
           </section>
         )}
 
@@ -167,7 +254,7 @@ export function CaseFile({ caseId, onChanged }: { caseId: string; onChanged: () 
                         <p>{cl.statement}</p>
                         <div className="chips">
                           {cl.txn_ids.map((t) => (
-                            <button key={t} className="chip" onClick={() => showTxn(t)}>
+                            <button key={t} className="chip" onClick={() => showTxns([t])}>
                               {t}
                             </button>
                           ))}
@@ -178,6 +265,24 @@ export function CaseFile({ caseId, onChanged }: { caseId: string; onChanged: () 
                   )
                 })}
               </ol>
+              {checks.length > 0 && (
+                <>
+                  <h4>Also checked, nothing found</h4>
+                  <ul className="checks">
+                    {checks.map((ch, i) => {
+                      const res = v?.check_results?.find((x) => x.index === i)
+                      return (
+                        <li key={i} className={res && !res.ok ? 'bad' : ''}>
+                          <span>{ch.description}</span>
+                          <small>
+                            {res && !res.ok ? res.problems.join('; ') : `Investigator ${TOOL_LABELS[ch.tool] ?? ch.tool}`}
+                          </small>
+                        </li>
+                      )
+                    })}
+                  </ul>
+                </>
+              )}
             </section>
 
             {txns.length > 0 && (
@@ -197,7 +302,7 @@ export function CaseFile({ caseId, onChanged }: { caseId: string; onChanged: () 
                     </thead>
                     <tbody>
                       {txns.map((t) => (
-                        <tr key={t.txn_id} id={`txn-${t.txn_id}`} className={highlight === t.txn_id ? 'hl' : ''}>
+                        <tr key={t.txn_id} id={`txn-${t.txn_id}`} className={highlight.includes(t.txn_id) ? 'hl' : ''}>
                           <td>{t.txn_id}</td>
                           <td>{shortTime(t.timestamp)}</td>
                           <td className={t.from_account === c.account ? 'me' : ''}>{t.from_account}</td>
@@ -215,7 +320,7 @@ export function CaseFile({ caseId, onChanged }: { caseId: string; onChanged: () 
             {c.pattern && (
               <section>
                 <h3>Pattern match</h3>
-                <p>
+                <p className="summary">
                   <strong>{patternName(c.pattern.pattern_id)}</strong>, {Math.round(c.pattern.confidence * 100)}% confident.{' '}
                   {c.pattern.reasoning}
                 </p>
@@ -227,31 +332,25 @@ export function CaseFile({ caseId, onChanged }: { caseId: string; onChanged: () 
           </>
         )}
 
-        <section>
-          <h3>Agent trail</h3>
-          <ol className="trail">
-            {c.timeline.map((e, i) => {
-              const d = detailText(e.detail)
-              return (
-                <li key={i} className={`a-${e.agent}`}>
-                  <time>{shortTime(e.time)}</time>
-                  <div>
-                    <strong>{AGENT_LABELS[e.agent] ?? e.agent}</strong> {describe(e.action)}
-                    {d && <p>{d}</p>}
-                  </div>
-                </li>
-              )
-            })}
-            {!c.timeline.length && <li className="none">Waiting for the agents to start.</li>}
-          </ol>
-          {c.usage && (
-            <p className="aside">
-              {c.tool_calls ?? 0} tool calls, {c.usage.llm_calls} model calls,{' '}
-              {(c.usage.input_tokens + c.usage.output_tokens).toLocaleString('en-IN')} tokens, about $
-              {c.usage.est_cost_usd.toFixed(4)}, {c.duration_s}s
-            </p>
-          )}
-        </section>
+        {!working && c.timeline.length > 0 && (
+          <section>
+            <div className="section-head">
+              <h3>Agent trail</h3>
+              <button className="link" aria-expanded={trailOpen} onClick={() => setTrailOpen((o) => !o)}>
+                {trailOpen ? 'Hide steps' : `Show all ${c.timeline.length} steps`}
+              </button>
+            </div>
+            <p className="story">{trailStory(c)}.</p>
+            {trailOpen && <Trail events={c.timeline} live={false} />}
+            {c.usage && (
+              <p className="aside">
+                {c.tool_calls ?? 0} tool calls, {c.usage.llm_calls} model calls,{' '}
+                {(c.usage.input_tokens + c.usage.output_tokens).toLocaleString('en-IN')} tokens, about $
+                {c.usage.est_cost_usd.toFixed(4)}, {c.duration_s}s
+              </p>
+            )}
+          </section>
+        )}
       </div>
 
       {c.status === 'awaiting_review' && r && (
@@ -280,7 +379,12 @@ export function CaseFile({ caseId, onChanged }: { caseId: string; onChanged: () 
       )}
       {c.decision && c.status !== 'awaiting_review' && (
         <p className="decided">
-          Analyst decision: {c.decision.action === 'approve' ? 'agreed with the agents' : c.decision.action === 'reject' ? 'overruled the agents' : 'asked for more investigation'}
+          Analyst decision:{' '}
+          {c.decision.action === 'approve'
+            ? 'agreed with the agents'
+            : c.decision.action === 'reject'
+              ? 'overruled the agents'
+              : 'asked for more investigation'}
           {c.decision.note ? `. Note: ${c.decision.note}` : ''}
         </p>
       )}

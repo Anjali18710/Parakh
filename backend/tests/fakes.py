@@ -6,7 +6,7 @@ import re
 
 from langchain_core.messages import AIMessage, ToolMessage
 
-from parakh.agents.schemas import CaseReport, Claim, PatternFinding, TriageDecision, TriageResult
+from parakh.agents.schemas import CaseReport, Check, Claim, PatternFinding, TriageDecision, TriageResult
 
 
 def _all_text(msgs) -> str:
@@ -30,14 +30,15 @@ class _Structured:
         if self.schema is CaseReport:
             p.report_calls += 1
             text = _all_text(msgs)
-            txns = re.findall(r'"txn_id": "(T\d+)", "time": "[^"]+", "from": "(\w+)", "to": "(\w+)", "amount": ([\d.]+)', text)
+            txns = re.findall(r"(T\d{7,8}) \| [^|]+ \| (\w+) -> (\w+) \| [^(]+\(([\d.]+)\)", text)
             claims = [Claim(statement=f"{f} sent ₹{float(a):,.2f} to {t}.", txn_ids=[tid], accounts=[f, t], amount=float(a))
-                      for tid, f, t, a in txns[:3]]
+                      for tid, f, t, a in sorted(txns, key=lambda x: -float(x[3]))[:3]]
+            checks = [Check(description="No loops of large transfers involve this account.", tool="account_profile")]
             if p.bad_first_report and p.report_calls == 1:
                 claims.append(Claim(statement="An invented transfer of ₹12,34,567.", txn_ids=["T9999999"], amount=1234567))
             return CaseReport(verdict="suspicious" if len(claims) >= 2 else "not_suspicious", risk_score=80,
                               pattern_id=p.pattern_id, summary="Money moved quickly through the account.",
-                              claims=claims, recommended_action="File a suspicious transaction report.")
+                              claims=claims, checks=checks, recommended_action="File a suspicious transaction report.")
         raise NotImplementedError(self.schema)
 
 

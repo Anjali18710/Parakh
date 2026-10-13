@@ -17,6 +17,7 @@ from pydantic import BaseModel, Field
 
 from parakh.agents.service import CaseService
 from parakh.config import settings
+from parakh.tools.flow import case_flow
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 
@@ -156,6 +157,14 @@ def create_app(service: CaseService | None = None, require_llm_key: bool = True)
         return [{"txn_id": r.txn_id, "timestamp": str(r.timestamp), "from_account": r.from_account,
                  "to_account": r.to_account, "amount": float(r.amount), "payment_format": r.payment_format}
                 for r in rows.sort_values("timestamp").itertuples()]
+
+    @app.get("/api/cases/{case_id}/flow")
+    def case_money_flow(case_id: str):
+        case = svc.repo.get("cases", case_id)
+        if not case:
+            raise HTTPException(404, "Case not found")
+        ids = [t for c in (case.get("report") or {}).get("claims", []) for t in c.get("txn_ids", [])]
+        return case_flow(svc.store, case["account"], ids)
 
     @app.post("/api/cases/{case_id}/decision")
     def decide(case_id: str, req: DecisionRequest):
