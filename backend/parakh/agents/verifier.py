@@ -74,11 +74,12 @@ def _matches_amount(value: float, amounts: list[float], tol: float = 1.0) -> boo
 
 
 def verify_report(report: dict, store: TransactionStore, case_account: str,
-                  tools_used: set[str] | None = None) -> dict:
+                  tools_used: set[str] | None = None, trusted_amounts: list[float] | None = None,
+                  pattern_kind: str | None = None) -> dict:
     """Check every cited claim against the ledger, and every 'nothing found' check against the tools actually run."""
     claim_results, issues = [], []
     cited_accounts: set[str] = set()
-    supported_amounts: list[float] = []
+    supported_amounts: list[float] = [float(a) for a in (trusted_amounts or []) if a]
 
     for i, claim in enumerate(report.get("claims", [])):
         problems = []
@@ -120,6 +121,9 @@ def verify_report(report: dict, store: TransactionStore, case_account: str,
     for r in claim_results:
         if not r["ok"]:
             issues.append(f"claim {r['index'] + 1}: " + "; ".join(r["problems"]))
+
+    if pattern_kind == "innocent" and report.get("verdict") == "suspicious":
+        issues.append("verdict 'suspicious' contradicts the pattern finding, which is an innocent explanation")
 
     # The summary may only quote amounts that some cited evidence supports.
     for value, tol in _amounts_with_tolerance(report.get("summary", "")):

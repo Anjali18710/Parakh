@@ -66,6 +66,7 @@ export interface Claim {
   accounts: string[]
   amount: number | null
   count: number | null
+  corrected_from?: string
 }
 
 export interface Check {
@@ -93,6 +94,8 @@ export interface Verification {
   checks_total?: number
   checks_verified?: number
   check_results?: { index: number; ok: boolean; problems: string[] }[]
+  removed_claims?: Claim[]
+  corrected_claims?: string[]
 }
 
 export interface FlowParty {
@@ -137,6 +140,8 @@ export interface CaseDetail extends Omit<CaseSummary, 'verdict' | 'risk_score' |
     reasoning: string
     ruled_out: string[]
     shape?: Record<string, unknown>
+    source?: 'agent' | 'rules'
+    excluded_by_shape?: string[]
   } | null
   verification: Verification | null
   timeline: TimelineEvent[]

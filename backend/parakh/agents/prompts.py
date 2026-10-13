@@ -40,13 +40,10 @@ evidence with the candidate patterns below (retrieved from the bank's pattern li
 Innocent patterns are included on purpose: if an innocent explanation fits better, choose it.
 Check each candidate's tell-tale signs against the evidence; list the candidates you ruled out.
 
-Use the measured facts to tell look-alikes apart:
-- fan_in collects from many and forwards to one or two accounts; gather_scatter collects from many AND
-  pays out to many (recipients_in_window >= 3).
-- Money mostly from repeat senders, to one main recipient (largest_recipient_share near 1), on a regular
-  schedule (low gap_variation) over weeks is how a business trades (wholesale, payroll), not laundering.
-- Laundering uses fresh counterparties: repeat shares near 0.
-If the measured facts point to an innocent pattern, set kind to "innocent" even if the burst looked suspicious.
+The candidates below have already been filtered by code: each one fits the measured shape of the money flow.
+Pick exactly one of their ids. Use the measured facts to choose between a laundering pattern and an innocent
+look-alike: repeat counterparties, one main recipient and a regular schedule over weeks mean a business;
+fresh counterparties and fast pass-through mean laundering.
 
 Candidate patterns:
 {candidates}"""
@@ -55,25 +52,33 @@ REPORT = """You are writing the case file for account {account}, to be read by a
 
 Rules:
 - `claims` are positive facts about money that actually moved. Every claim must cite the transaction ids that prove it, copied exactly from the evidence.
-- If a claim states an amount, the amount must equal the cited transaction's amount or the exact total of
-  the cited transactions. If it states a count, it must equal the number of cited transactions or accounts.
+- NEVER write an amount or a count yourself. Code fills them in from the cited transactions:
+  in a claim write {{total}} for the sum of its cited transactions and {{count}} for how many there are,
+  e.g. "AC123456 received {{total}} in {{count}} payments from different accounts within a day."
+  In the summary use {{total_in}}, {{total_out}}, {{senders}}, {{recipients}} and {{passed_through}}.
+- Make each claim cite exactly the transactions its sentence is about.
 - List in `accounts` only accounts that appear in the cited transactions.
 - Things looked for but not found ("no loops", "no shared destinations") go in `checks`, never in `claims`,
   together with the tool that was run to check them.
 - Do not mention search thresholds or tool settings in claims.
-- Write rupee amounts the Indian way (₹9,49,053 or ₹64.1 lakh), never in millions.
 - Each claim must add new information; do not restate another claim as a count.
-- Amounts in the summary must also appear in, or be totals of, the cited transactions.
 - If the pattern finding is innocent, the verdict is 'not_suspicious' unless the evidence clearly says otherwise.
 - Do not state anything you cannot cite. Fewer, correct claims are better than many shaky ones.
 - Verdict 'suspicious' only when the evidence shows a laundering pattern; otherwise 'not_suspicious'.
 - risk_score: 0-30 low, 31-69 unclear, 70-100 high.
-- Use the pattern id from the pattern finding."""
+- The pattern is already decided (see the pattern finding); describe it, do not change it."""
 
-REPORT_RETRY = """Your previous report failed fact-checking. Problems found:
+REPORT_RETRY = """Your previous report failed fact-checking.
+
+Previous report:
+{previous}
+
+Problems found:
 {issues}
-Fix or remove each failing claim. Only cite transaction ids that appear in the evidence. Move anything that
-was not found into `checks`."""
+
+Return the corrected report. Keep every claim that had no problem exactly as it was. Fix or delete only the
+failing ones. Use {{total}} and {{count}} instead of writing numbers. Anything that was not found belongs in
+`checks`, not `claims`."""
 
 SINGLE_AGENT = """You are an anti-money-laundering analyst investigating account {account}.
 
