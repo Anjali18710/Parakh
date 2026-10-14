@@ -49,6 +49,14 @@ flowchart LR
 - **Learning from analyst decisions.** Each agree or overrule is stored as a precedent together with the measured shape of the account's money flow. New cases retrieve the closest precedents with FAISS and show them to the pattern agent and the analyst: "an analyst overruled 'suspicious' on a 91% similar account: regular distributor". Similarity is computed on measured behaviour, not text, so wording can't game it.
 - **Durability.** With MongoDB configured, paused LangGraph runs are checkpointed in MongoDB (`MongoDBSaver`), so a case waiting for review survives a server restart and resumes exactly where it stopped. On startup, runs that were cut off mid-investigation are marked failed with a **Retry** button.
 
+### The analyst dashboard
+
+- **Summary strip:** money in, money out, share passed straight through, time span, claims verified.
+- **Where the money went:** a flow graph of senders and recipients around the case account. Band width is the amount; gold bands are transactions the report cites, and clicking one jumps to it.
+- **Live agent trail:** while a case runs, each tool call appears as it happens. Afterwards the trail collapses to a one-line story with the full audit log one click away.
+- **Evidence:** every claim with its fact-check result, plus what was checked and not found.
+- **Decision:** agree, overrule, or send the agents back with a note.
+
 ### Design decisions worth knowing
 
 - **Tools return summaries, not data.** An LLM can't read 60,000 transactions. Each tool compresses what matters (for example "8 recipients all forwarded money to AC985490 within 72 hours") and attaches the transaction IDs behind it.
