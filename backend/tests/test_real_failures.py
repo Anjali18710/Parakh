@@ -76,3 +76,20 @@ def test_loop_is_a_round_trip_not_a_chain(demo):
     assert state["pattern"]["pattern_id"] == "cycle"
     assert state["pattern"]["source"] == "agent"
     assert state["verification"]["passed"] and state["verification"]["claims_verified"] >= 1
+
+
+def test_miscounted_senders_and_duplicate_citation_from_real_run(demo):
+    """Real claim from a gpt-oss run: 7 payments cited (one twice), but the text said 'eight distinct senders'."""
+    from parakh.agents.rules import correct_claim
+    from parakh.agents.verifier import verify_report
+    store = demo[0]
+    ids = ["T0049760", "T0049854", "T0049870", "T0049875", "T0049880", "T0049884", "T0049998", "T0049998"]
+    claim = {"statement": f"{HUB} received ₹64,07,207 in 7 payments from eight distinct senders within 24 hours.",
+             "txn_ids": ids, "accounts": [HUB]}
+    result = verify_report({"verdict": "not_suspicious", "summary": "", "claims": [claim]}, store, HUB)
+    problems = result["claim_results"][0]["problems"]
+    assert problems and "eight senders" in problems[0]
+    fixed = correct_claim(claim, problems, store, HUB)
+    assert "seven distinct senders" in fixed["statement"] and len(fixed["txn_ids"]) == 7
+    again = verify_report({"verdict": "not_suspicious", "summary": "", "claims": [fixed]}, store, HUB)
+    assert again["passed"]

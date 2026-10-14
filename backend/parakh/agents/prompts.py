@@ -54,7 +54,8 @@ Rules:
 - `claims` are positive facts about money that actually moved. Every claim must cite the transaction ids that prove it, copied exactly from the evidence.
 - NEVER write an amount or a count yourself. Code fills them in from the cited transactions:
   in a claim write {{total}} for the sum of its cited transactions and {{count}} for how many there are,
-  e.g. "AC123456 received {{total}} in {{count}} payments from different accounts within a day."
+  {{senders}} and {{recipients}} for how many different accounts sent or received the cited payments,
+  e.g. "AC123456 received {{total}} in {{count}} payments from {{senders}} different accounts within a day."
   In the summary use {{total_in}}, {{total_out}}, {{senders}}, {{recipients}} and {{passed_through}}.
 - Make each claim cite exactly the transactions its sentence is about.
 - List in `accounts` only accounts that appear in the cited transactions.

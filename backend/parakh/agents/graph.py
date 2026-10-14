@@ -183,7 +183,13 @@ class Deps:
 
 
 def build_case_graph(deps: Deps, mode: Mode = "multi", human_review: bool = True,
-                     enforce_verifier: bool = True, checkpointer=None):
+                     enforce_verifier: bool = True, shape_rules: bool = True, checkpointer=None):
+    """Build the per-case agent graph.
+
+    enforce_verifier: send failing reports back for rewriting and correct/remove what still fails.
+    shape_rules: limit the pattern agent to typologies the measured shape allows (off = FAISS only).
+    Both switches exist so the evaluation can measure what each guardrail contributes.
+    """
     inv_tools = make_tools(deps.itools)
     all_tools = make_tools(deps.itools, deps.library)
 
@@ -216,11 +222,11 @@ def build_case_graph(deps: Deps, mode: Mode = "multi", human_review: bool = True
         # The agent chooses among those (laundering vs innocent look-alike) and explains why.
         cited = [t for e in state.get("evidence", []) for t in _TXN_ID.findall(e["result"])]
         shape = shape_facts(deps.store, deps.itools, state["account"], cited)
-        allowed_ids = structural_candidates(shape, state["alert"])
-        # FAISS adds library entries that match the story; they are offered only if the shape allows them.
+        allowed_ids = structural_candidates(shape, state["alert"]) if shape_rules else []
+        # FAISS adds library entries that match the story; with shape rules on, only if the shape allows them.
         for query in (state.get("investigation_summary", ""), _signals_text(state["alert"])):
             for c in deps.library.search(query, k=4):
-                if c["id"] not in allowed_ids and pattern_conflict(c["id"], shape, state["alert"]) is None:
+                if c["id"] not in allowed_ids and (not shape_rules or pattern_conflict(c["id"], shape, state["alert"]) is None):
                     allowed_ids.append(c["id"])
         allowed = [c for c in (deps.library.get(i) for i in allowed_ids) if c]
         excluded = [i for i in deps.library.ids() if i not in allowed_ids]
@@ -233,7 +239,7 @@ def build_case_graph(deps: Deps, mode: Mode = "multi", human_review: bool = True
         events: list[dict] = []
         finding: PatternFinding = model.invoke(msgs, config=config)
         source = "agent"
-        if allowed_ids and finding.pattern_id not in allowed_ids:
+        if shape_rules and allowed_ids and finding.pattern_id not in allowed_ids:
             reason = pattern_conflict(finding.pattern_id, shape, state["alert"]) or "it is not one of the allowed candidates"
             events.append(_emit(config, _event("verifier", f"rejected pattern '{finding.pattern_id}'", reason)))
             msgs.append(HumanMessage(f"'{finding.pattern_id}' is not allowed: {reason}. "
@@ -281,7 +287,7 @@ def build_case_graph(deps: Deps, mode: Mode = "multi", human_review: bool = True
         report: CaseReport = deps.llm.with_structured_output(CaseReport).invoke(msgs, config=config)
         draft = report.model_dump()
         # Code fills in every number the report states, so totals and counts cannot be miscalculated.
-        data = {**draft, "claims": [fill_claim(c, deps.store) for c in draft["claims"]], "draft": draft}
+        data = {**draft, "claims": [fill_claim(c, deps.store, state["account"]) for c in draft["claims"]], "draft": draft}
         if pattern:
             data["pattern_id"] = pattern["pattern_id"]
             data["summary"] = fill_summary(draft["summary"], pattern.get("shape", {}))
@@ -313,7 +319,7 @@ def build_case_graph(deps: Deps, mode: Mode = "multi", human_review: bool = True
             for i, claim in enumerate(report["claims"]):
                 if i not in problems:
                     kept.append(claim)
-                elif (fixed := correct_claim(claim, problems[i], deps.store)) is not None:
+                elif (fixed := correct_claim(claim, problems[i], deps.store, state["account"])) is not None:
                     kept.append(fixed)
                     corrected.append(fixed)
                 else:

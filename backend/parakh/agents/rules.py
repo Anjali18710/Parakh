@@ -89,16 +89,22 @@ def structural_candidates(shape: dict, alert: dict) -> list[str]:
 _PLACEHOLDER = re.compile(r"\{(total|count|accounts|total_in|total_out|senders|recipients|passed_through)\}")
 
 
-def fill_claim(claim: dict, store: TransactionStore) -> dict:
-    """Replace {total}/{count}/{accounts} in a claim with values computed from its cited transactions."""
-    rows = store.get_txns(list(dict.fromkeys(claim.get("txn_ids") or [])))
+def fill_claim(claim: dict, store: TransactionStore, account: str | None = None) -> dict:
+    """Replace {total}, {count}, {senders}, {recipients}, {accounts} with values computed from the cited rows.
+
+    Duplicate citations are dropped first, so a transaction is never counted twice.
+    """
+    ids = list(dict.fromkeys(claim.get("txn_ids") or []))
+    rows = store.get_txns(ids)
     total = float(rows.amount.sum()) if not rows.empty else 0.0
-    parties = set(rows.from_account) | set(rows.to_account) if not rows.empty else set()
+    senders = {a for a in rows.from_account if a != account} if not rows.empty else set()
+    recipients = {a for a in rows.to_account if a != account} if not rows.empty else set()
     text = claim.get("statement", "")
     used_total = "{total}" in text
-    text = text.replace("{total}", inr(total)).replace("{count}", str(len(rows)))
-    text = text.replace("{accounts}", str(max(len(parties) - 1, 0)))
-    out = {**claim, "statement": text}
+    for key, value in (("{total}", inr(total)), ("{count}", str(len(rows))), ("{senders}", str(len(senders))),
+                       ("{recipients}", str(len(recipients))), ("{accounts}", str(len(senders | recipients)))):
+        text = text.replace(key, value)
+    out = {**claim, "statement": text, "txn_ids": ids}
     if used_total:
         out["amount"] = round(total, 2)
     return out
@@ -116,21 +122,37 @@ def fill_summary(summary: str, shape: dict) -> str:
 _RUPEES = re.compile(r"₹\s?[0-9][0-9,]*(?:\.[0-9]+)?(?:\s?(?:lakh|lakhs|crore|crores|L|Cr|M|million))?", re.I)
 
 
-def correct_claim(claim: dict, problems: list[str], store: TransactionStore) -> dict | None:
-    """Repair a claim whose only fault is a miscalculated amount. Returns None if it cannot be repaired.
+def correct_claim(claim: dict, problems: list[str], store: TransactionStore,
+                  account: str | None = None) -> dict | None:
+    """Repair a claim whose only faults are a miscalculated amount or a miscounted number.
+
+    Returns None if it cannot be repaired.
 
     The cited transactions are the evidence; if the agent merely added them up wrong, the claim is
     rewritten with the true total rather than thrown away.
     """
-    if not claim.get("txn_ids") or not problems or not all(p.startswith("amount") for p in problems):
+    if not claim.get("txn_ids") or not problems or not all(p.startswith(("amount", "count")) for p in problems):
         return None
-    rows = store.get_txns(list(dict.fromkeys(claim["txn_ids"])))
-    if rows.empty or len(rows) != len(set(claim["txn_ids"])):
+    ids = list(dict.fromkeys(claim["txn_ids"]))
+    rows = store.get_txns(ids)
+    if rows.empty or len(rows) != len(ids):
         return None
-    amounts = _RUPEES.findall(claim.get("statement", ""))
-    if len(amounts) != 1:
-        return None
-    total = float(rows.amount.sum())
-    fixed = claim["statement"].replace(amounts[0], inr(total), 1)
-    return {**claim, "statement": fixed, "amount": round(total, 2),
-            "corrected_from": amounts[0].strip()}
+    statement, notes, out = claim.get("statement", ""), [], {**claim, "txn_ids": ids}
+    if any(p.startswith("amount") for p in problems):
+        amounts = _RUPEES.findall(statement)
+        if len(amounts) != 1:
+            return None
+        total = float(rows.amount.sum())
+        statement = statement.replace(amounts[0], inr(total), 1)
+        out["amount"] = round(total, 2)
+        notes.append(amounts[0].strip())
+    if any(p.startswith("count") for p in problems):
+        from parakh.agents.verifier import count_mentions  # local import avoids a cycle
+
+        for w in sorted(count_mentions(statement, rows, account), key=lambda w: -w["start"]):
+            statement = statement[:w["start"]] + w["replacement"] + statement[w["end"]:]
+            notes.append(f"{w['text']} {w['noun']}")
+        out.pop("count", None)
+    out["statement"] = statement
+    out["corrected_from"] = ", ".join(notes)
+    return out
