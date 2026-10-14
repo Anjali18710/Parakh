@@ -25,10 +25,6 @@ _THRESHOLD = re.compile(r"(≥|>=|>|≤|<=|<|\babove|\bover|\bbelow|\bunder|\bat
                         r"\bless than|\bexceeding|\bthreshold of|\bminimum of|\bup to)\s*$", re.I)
 
 
-def _amounts_in_text(text: str) -> list[float]:
-    return [v for v, _ in _amounts_with_tolerance(text)]
-
-
 def _amounts_with_tolerance(text: str) -> list[tuple[float, float]]:
     """Rupee amounts in a sentence, each with how far it may be from the truth given how it is written.
 
@@ -109,9 +105,9 @@ def _candidates(amounts: list[float]) -> list[float]:
     return [total, max(amounts), min(amounts), total / len(amounts)] + amounts
 
 
-def _matches_amount(value: float, amounts: list[float], tol: float = 1.0) -> bool:
-    """True if `value` equals a cited amount, their total, max, min or average, within `tol` rupees."""
-    return any(abs(value - c) <= tol for c in _candidates(amounts))
+def _matches_amount(value: float, amounts: list[float], tol: float = 1.0, extra: list[float] = ()) -> bool:
+    """True if `value` equals a cited amount, their total, max, min or average (or an `extra` subtotal)."""
+    return any(abs(value - c) <= tol for c in _candidates(amounts) + list(extra))
 
 
 def verify_report(report: dict, store: TransactionStore, case_account: str,
@@ -137,12 +133,16 @@ def verify_report(report: dict, store: TransactionStore, case_account: str,
             if acc not in involved:
                 problems.append(f"account {acc} is not part of the cited transactions")
         amounts = [float(a) for a in txns.amount]
-        supported_amounts.extend(_candidates(amounts))
-        if claim.get("amount") is not None and not _matches_amount(float(claim["amount"]), amounts, 1.0):
+        # A claim about money in and out may quote either side: what reached the case account, or what left it.
+        sides = [float(txns[txns.to_account == case_account].amount.sum()),
+                 float(txns[txns.from_account == case_account].amount.sum())]
+        sides = [x for x in sides if x]
+        supported_amounts.extend(_candidates(amounts) + sides)
+        if claim.get("amount") is not None and not _matches_amount(float(claim["amount"]), amounts, 1.0, sides):
             problems.append(f"amount ₹{inr_plain(float(claim['amount']))} does not match the cited transactions "
                             f"(they total ₹{inr_plain(sum(amounts))})")
         for value, tol in _amounts_with_tolerance(claim.get("statement", "")):
-            if not _matches_amount(value, amounts, tol):
+            if not _matches_amount(value, amounts, tol, sides):
                 problems.append(f"amount ₹{inr_plain(value)} in the statement does not match the cited transactions "
                                 f"(they total ₹{inr_plain(sum(amounts))})")
                 break
@@ -155,6 +155,9 @@ def verify_report(report: dict, store: TransactionStore, case_account: str,
                        txns.to_account.nunique(), txns.from_account.nunique()}
             if n not in allowed:
                 problems.append(f"count {n} does not match the cited transactions")
+        unfilled = re.findall(r"\{\w+\}", claim.get("statement", ""))
+        if unfilled:
+            problems.append(f"placeholder {unfilled[0]} could not be filled in from the cited transactions")
         claim_results.append({"index": i, "ok": not problems, "problems": problems})
 
     if report.get("claims") and case_account not in cited_accounts:

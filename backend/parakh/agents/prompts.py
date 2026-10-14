@@ -60,7 +60,10 @@ Rules:
   in a claim write {{total}} for the sum of its cited transactions and {{count}} for how many there are,
   {{senders}} and {{recipients}} for how many different accounts sent or received the cited payments,
   e.g. "AC123456 received {{total}} in {{count}} payments from {{senders}} different accounts within a day."
+  Only these placeholders exist; never invent others. For a claim about money in AND out, cite both sides and
+  use {{total_in}}, {{total_out}} and {{passed_through}} (share of the money in that left again).
   In the summary use {{total_in}}, {{total_out}}, {{senders}}, {{recipients}} and {{passed_through}}.
+- This is an Indian bank: the report filed with FIU-IND is a suspicious transaction report (STR), not a SAR.
 - Make each claim cite exactly the transactions its sentence is about.
 - List in `accounts` only accounts that appear in the cited transactions.
 - Things looked for but not found ("no loops", "no shared destinations") go in `checks`, never in `claims`,

@@ -83,19 +83,4 @@ export function hoursText(h: number): string {
   return `${Math.round(h / 24)} days`
 }
 
-export const TOOL_LABELS: Record<string, string> = {
-  account_profile: 'looked at the account profile',
-  list_transactions: 'listed transactions',
-  trace_money: 'followed the money',
-  find_cycles: 'checked for loops',
-  common_counterparties: 'checked for shared destinations',
-  search_patterns: 'searched the pattern library',
-}
-
-export function hoursText(h: number): string {
-  if (h < 1) return `${Math.round(h * 60)} min`
-  if (h < 48) return `${Math.round(h)} h`
-  return `${Math.round(h / 24)} days`
-}
-
 export const isWorking = (s: string) => s === 'queued' || s === 'investigating' || s === 'closing'

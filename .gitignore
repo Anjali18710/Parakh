@@ -5,9 +5,8 @@ __pycache__/
 .venv/
 venv/
 .env
-
-# Evaluation output (commit a summary by copying it into the README)
-backend/results/
+# Screening results are cached next to the data file and rebuilt when it changes
+backend/data/*.alerts.json
 
 # Frontend
 node_modules/

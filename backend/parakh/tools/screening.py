@@ -36,14 +36,6 @@ class Alert:
     def to_dict(self) -> dict:
         return {"account": self.account, "score": round(self.score, 2), "signals": [asdict(s) for s in self.signals]}
 
-    def brief(self) -> dict:
-        """Compact view for the triage agent (no transaction lists)."""
-        return {
-            "account": self.account,
-            "score": round(self.score, 2),
-            "signals": [f"{s.name}: {s.detail}" for s in self.signals],
-        }
-
 
 def _burst(times: np.ndarray, parties: np.ndarray, amounts: np.ndarray, ids: np.ndarray,
            min_parties: int, min_total: float, window=DAY):

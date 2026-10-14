@@ -288,7 +288,8 @@ def generate(cfg: GeneratorConfig | None = None) -> pd.DataFrame:
     mapping = {acc: f"AC{code}" for acc, code in zip(accounts, codes)}
     df["from_account"] = df.from_account.map(mapping)
     df["to_account"] = df.to_account.map(mapping)
-    # Kept outside the transaction file; used only to explain false alarms during evaluation.
+    # Who each account really is (employer, distributor, mule...), kept outside the transaction file.
+    # Used only to give the demo data realistic payment remarks.
     df.attrs["roles"] = {mapping[a]: ROLE_NAMES.get(a[:2], "other") for a in accounts}
     df["timestamp"] = pd.to_datetime(df["timestamp"]).dt.strftime("%Y-%m-%dT%H:%M:%S")
     return df

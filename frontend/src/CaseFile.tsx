@@ -96,6 +96,50 @@ function ShapeFacts({ shape }: { shape: Record<string, unknown> }) {
   )
 }
 
+/** What the analyst's decision set in motion. */
+function Outcome({ c, strURL }: { c: CaseDetail; strURL: string }) {
+  const suspicious = c.status === 'confirmed_suspicious'
+  const overruled = c.decision?.action === 'reject'
+  return (
+    <section className={`outcome ${suspicious ? 'suspicious' : 'cleared'}`} aria-label="What happens next">
+      <div className="section-head">
+        <h3>
+          <span className="badge" aria-hidden="true" />
+          {suspicious ? 'Confirmed suspicious' : 'Closed as not suspicious'}
+          {overruled ? ', overruling the agents' : ''}
+        </h3>
+        {suspicious && (
+          <a className="button str" href={strURL} download>
+            <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 2v8M4.5 6.5 8 10l3.5-3.5M3 13h10" /></svg>
+            Download final STR
+          </a>
+        )}
+      </div>
+      <ol>
+        {suspicious ? (
+          <>
+            <li><b>1</b><span>The STR is now final (no DRAFT watermark). The bank's Principal Officer adds the KYC and branch details and files it with FIU-IND through FINnet within 7 working days of being satisfied it is suspicious.</span></li>
+            <li><b>2</b><span>The customer must not be told. Tipping off is prohibited under the PMLA, so the account keeps working as normal while it is reported.</span></li>
+          </>
+        ) : (
+          <>
+            <li><b>1</b><span>No STR is prepared. The alert is closed and the account goes back to normal screening.</span></li>
+            <li><b>2</b><span>The reason is kept with the case, so an auditor can see why the alert was dismissed.</span></li>
+          </>
+        )}
+        <li>
+          <b>3</b>
+          <span>
+            Saved as a precedent. When a new account's money flow looks like this one, the pattern agent and the
+            analyst will see {overruled ? 'that you overruled the agents here' : 'this decision'} before they choose.
+          </span>
+        </li>
+      </ol>
+      {c.decision?.note && <p className="note">Your note: <q>{c.decision.note}</q></p>}
+    </section>
+  )
+}
+
 export function CaseFile({ caseId, onChanged }: { caseId: string; onChanged: () => void }) {
   const [c, setCase] = useState<CaseDetail | null>(null)
   const [txns, setTxns] = useState<Txn[]>([])
@@ -219,12 +263,12 @@ export function CaseFile({ caseId, onChanged }: { caseId: string; onChanged: () 
       {flow && (flow.inflows.length > 0 || flow.outflows.length > 0) && (
         <dl className="strip">
           <div>
-            <dt>Money in</dt>
+            <dt><span className="dot in" aria-hidden="true" />Money in</dt>
             <dd><CountUp value={flow.total_in} format={lakhs} /></dd>
             <span>from {flow.senders} account{flow.senders === 1 ? '' : 's'}</span>
           </div>
           <div>
-            <dt>Money out</dt>
+            <dt><span className="dot out" aria-hidden="true" />Money out</dt>
             <dd><CountUp value={flow.total_out} format={lakhs} /></dd>
             <span>to {flow.recipients} account{flow.recipients === 1 ? '' : 's'}</span>
           </div>
@@ -507,16 +551,11 @@ export function CaseFile({ caseId, onChanged }: { caseId: string; onChanged: () 
           </div>
         </footer>
       )}
-      {c.decision && c.status !== 'awaiting_review' && (
-        <p className="decided">
-          Analyst decision:{' '}
-          {c.decision.action === 'approve'
-            ? 'agreed with the agents'
-            : c.decision.action === 'reject'
-              ? 'overruled the agents'
-              : 'asked for more investigation'}
-          {c.decision.note ? `. Note: ${c.decision.note}` : ''}
-        </p>
+      {c.decision && (c.status === 'confirmed_suspicious' || c.status === 'closed_not_suspicious') && (
+        <Outcome c={c} strURL={fileURL(`/cases/${caseId}/str.pdf`)} />
+      )}
+      {c.decision && c.status === 'superseded' && (
+        <p className="decided">You asked the agents to dig further, so this case was reopened as a new investigation.</p>
       )}
     </section>
   )

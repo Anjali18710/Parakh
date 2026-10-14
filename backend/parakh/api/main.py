@@ -4,7 +4,6 @@ Run locally:  uvicorn parakh.api.main:app --reload
 """
 from __future__ import annotations
 
-import json
 import logging
 import os
 import threading
@@ -19,7 +18,6 @@ from pydantic import BaseModel, Field
 from parakh.agents.service import CaseService
 from parakh.config import settings
 from parakh.data.remarks import injection_reasons
-from parakh.eval.run_eval import PUBLISHED_DIR
 from parakh.reports.str_pdf import build_str, filename as str_filename
 from parakh.tools.flow import case_flow
 
@@ -110,10 +108,6 @@ def create_app(service: CaseService | None = None, require_llm_key: bool = True)
         need_llm()
         return svc.start_run(min(req.max_cases, settings.max_cases_per_run), req.mode, req.use_llm_triage)
 
-    @app.get("/api/runs")
-    def list_runs():
-        return svc.repo.list("runs", 50)
-
     @app.get("/api/runs/{run_id}")
     def get_run(run_id: str):
         run = svc.repo.get("runs", run_id)
@@ -187,24 +181,6 @@ def create_app(service: CaseService | None = None, require_llm_key: bool = True)
         pdf = build_str(case, svc.store, settings.reporting_entity)
         return Response(pdf, media_type="application/pdf",
                         headers={"Content-Disposition": f'attachment; filename="{str_filename(case)}"'})
-
-    @app.get("/api/precedents")
-    def precedents():
-        """Analyst decisions the agents learn from."""
-        keep = ("_id", "account", "agents_verdict", "agents_pattern", "final_verdict", "overruled", "note", "created_at")
-        return [{k: d.get(k) for k in keep} for d in svc.repo.list("precedents", 500)]
-
-    @app.get("/api/evaluations")
-    def evaluations():
-        """Published evaluation summaries (written by `python -m parakh.eval.run_eval`), newest first."""
-        out = []
-        for path in sorted(PUBLISHED_DIR.glob("*.json")):
-            try:
-                out.append(json.loads(path.read_text()))
-            except ValueError:
-                continue
-        out.sort(key=lambda e: e.get("updated_at", ""), reverse=True)
-        return out
 
     @app.post("/api/cases/{case_id}/retry")
     def retry(case_id: str):

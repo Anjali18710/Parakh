@@ -14,7 +14,7 @@ from langgraph.types import Command
 from parakh.agents.graph import Deps, build_case_graph
 from parakh.agents.memory import CaseMemory
 from parakh.agents.llm import UsageTracker, get_llm
-from parakh.agents.triage import triage_by_score, triage_with_llm
+from parakh.agents.triage import brief, triage_by_score, triage_with_llm
 from parakh.config import Settings, settings as default_settings
 from parakh.data.store import TransactionStore
 from parakh.patterns.library import PatternLibrary
@@ -132,8 +132,7 @@ class CaseService:
             candidates = [a for a in self.alerts if a["account"] not in busy]
             # The triage agent sees the strongest alerts first; the rest wait for the next run.
             pool = candidates[: max(60, max_cases * 4)]
-            briefs = [{"account": a["account"], "score": a["score"],
-                       "signals": [f"{s['name']}: {s['detail']}" for s in a["signals"]]} for a in pool]
+            briefs = [brief(a) for a in pool]
             tracker = UsageTracker()
             if use_llm_triage:
                 decisions = triage_with_llm(self.llm, briefs, max_cases, {"callbacks": [tracker]})

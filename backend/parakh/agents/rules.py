@@ -89,34 +89,59 @@ def structural_candidates(shape: dict, alert: dict) -> list[str]:
 _PLACEHOLDER = re.compile(r"\{(total|count|accounts|total_in|total_out|senders|recipients|passed_through)\}")
 
 
-def fill_claim(claim: dict, store: TransactionStore, account: str | None = None) -> dict:
-    """Replace {total}, {count}, {senders}, {recipients}, {accounts} with values computed from the cited rows.
+_ANY_PLACEHOLDER = re.compile(r"\{(\w+)\}")
 
-    Duplicate citations are dropped first, so a transaction is never counted twice.
+
+def fill_claim(claim: dict, store: TransactionStore, account: str | None = None) -> dict:
+    """Replace placeholders such as {total} and {count} with values computed from the cited rows.
+
+    Duplicate citations are dropped first, so a transaction is never counted twice. Models
+    sometimes invent their own names ({total_out}, {share_passed_through}); the common ones are
+    understood too, and any that are not stay visible so the fact-checker rejects the claim.
     """
     ids = list(dict.fromkeys(claim.get("txn_ids") or []))
     rows = store.get_txns(ids)
     total = float(rows.amount.sum()) if not rows.empty else 0.0
     senders = {a for a in rows.from_account if a != account} if not rows.empty else set()
     recipients = {a for a in rows.to_account if a != account} if not rows.empty else set()
+    if account and not rows.empty:
+        t_in = float(rows[rows.to_account == account].amount.sum())
+        t_out = float(rows[rows.from_account == account].amount.sum())
+    else:
+        t_in = t_out = total
+    share = f"{min(t_out / t_in, 1.0):.0%}" if t_in and t_out else None
+    values = {
+        "total": inr(total), "amount": inr(total), "count": str(len(rows)), "payments": str(len(rows)),
+        "senders": str(len(senders)), "recipients": str(len(recipients)), "accounts": str(len(senders | recipients)),
+        "total_in": inr(t_in), "inflow": inr(t_in), "total_inflow": inr(t_in),
+        "total_out": inr(t_out), "outflow": inr(t_out), "total_outflow": inr(t_out),
+    }
+    if share:
+        values.update({"share_passed_through": share, "passed_through": share, "share": share, "pass_through": share})
     text = claim.get("statement", "")
-    used_total = "{total}" in text
-    for key, value in (("{total}", inr(total)), ("{count}", str(len(rows))), ("{senders}", str(len(senders))),
-                       ("{recipients}", str(len(recipients))), ("{accounts}", str(len(senders | recipients)))):
-        text = text.replace(key, value)
+    used_total = "{total}" in text or "{amount}" in text
+    text = _ANY_PLACEHOLDER.sub(lambda m: values.get(m.group(1), m.group(0)), text)
     out = {**claim, "statement": text, "txn_ids": ids}
     if used_total:
         out["amount"] = round(total, 2)
     return out
 
 
+_WESTERN_RUPEES = re.compile(r"₹\s?(\d{1,3}(?:,\d{3}){2,})(\.\d+)?")
+_PATTERN_IDS = re.compile(r"\b(fan_out|fan_in|scatter_gather|gather_scatter|layering_chain)\b")
+
+
 def fill_summary(summary: str, shape: dict) -> str:
+    share = f"{shape.get('share_passed_through', 0):.0%}"
     values = {
         "total_in": inr(shape.get("total_in", 0)), "total_out": inr(shape.get("total_out", 0)),
         "senders": str(shape.get("senders_in_window", 0)), "recipients": str(shape.get("recipients_in_window", 0)),
-        "passed_through": f"{shape.get('share_passed_through', 0):.0%}",
+        "passed_through": share, "share_passed_through": share,
     }
-    return _PLACEHOLDER.sub(lambda m: values.get(m.group(1), m.group(0)), summary)
+    text = _ANY_PLACEHOLDER.sub(lambda m: values.get(m.group(1), m.group(0)), summary)
+    # Indian digit grouping (₹68,69,564, not ₹6,869,564), and readable pattern names.
+    text = _WESTERN_RUPEES.sub(lambda m: inr(float(m.group(1).replace(",", ""))) + (m.group(2) or ""), text)
+    return _PATTERN_IDS.sub(lambda m: m.group(1).replace("_", "-"), text)
 
 
 _RUPEES = re.compile(r"₹\s?[0-9][0-9,]*(?:\.[0-9]+)?(?:\s?(?:lakh|lakhs|crore|crores|L|Cr|M|million))?", re.I)

@@ -1,4 +1,8 @@
-from parakh.agents.verifier import _amounts_in_text, verify_report
+from parakh.agents.verifier import _amounts_with_tolerance, verify_report
+
+
+def _amounts_in_text(text):
+    return [v for v, _ in _amounts_with_tolerance(text)]
 
 
 def _txns(store, n=2):

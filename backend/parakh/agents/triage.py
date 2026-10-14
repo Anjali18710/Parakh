@@ -11,6 +11,12 @@ from parakh.agents.schemas import TriageResult
 BATCH = 30
 
 
+def brief(alert: dict) -> dict:
+    """Compact view of an alert for the triage agent (no transaction lists)."""
+    return {"account": alert["account"], "score": alert["score"],
+            "signals": [f"{s['name']}: {s['detail']}" for s in alert["signals"]]}
+
+
 def triage_with_llm(llm, alerts: list[dict], budget: int, config: dict | None = None) -> list[dict]:
     """Ask the triage agent which alerts to open. Alerts are sent in batches to keep prompts small."""
     model = llm.with_structured_output(TriageResult)
@@ -35,32 +41,3 @@ def triage_by_score(alerts: list[dict], budget: int) -> list[dict]:
     ranked = sorted(alerts, key=lambda a: -a["score"])
     return [{"account": a["account"], "open_case": True, "priority": 1, "selected": i < budget,
              "reason": f"rule score {a['score']}"} for i, a in enumerate(ranked)]
-
-
-# --------------------------------------------------------------- rules-only case verdict
-def rules_report(alert: dict, threshold: float = 2.0) -> dict:
-    """What a purely rule-based system would conclude about an alert, without any agent."""
-    names = {s["name"] for s in alert["signals"]}
-    if "in_cycle" in names:
-        pattern = "cycle"
-    elif {"fan_out_burst", "fan_in_burst"} <= names:
-        pattern = "gather_scatter"
-    elif "fan_out_burst" in names:
-        pattern = "fan_out"
-    elif "fan_in_burst" in names:
-        pattern = "fan_in"
-    elif "rapid_pass_through" in names:
-        pattern = "layering_chain"
-    else:
-        pattern = "none"
-    suspicious = alert["score"] >= threshold
-    claims = [{"statement": s["detail"], "txn_ids": s.get("txn_ids", []), "accounts": [alert["account"]],
-               "amount": None, "count": None} for s in alert["signals"] if s.get("txn_ids")]
-    return {
-        "verdict": "suspicious" if suspicious else "not_suspicious",
-        "risk_score": min(100, int(alert["score"] * 20)),
-        "pattern_id": pattern if suspicious else "none",
-        "summary": f"Rule score {alert['score']} from signals: {', '.join(sorted(names))}.",
-        "claims": claims,
-        "recommended_action": "Escalate" if suspicious else "Close",
-    }

@@ -93,3 +93,24 @@ def test_miscounted_senders_and_duplicate_citation_from_real_run(demo):
     assert "seven distinct senders" in fixed["statement"] and len(fixed["txn_ids"]) == 7
     again = verify_report({"verdict": "not_suspicious", "summary": "", "claims": [fixed]}, store, HUB)
     assert again["passed"]
+
+
+def test_invented_placeholders_are_filled_or_rejected(demo):
+    """Real run on the hub: the agent wrote {total_out} and {share_passed_through}, which reached the analyst as raw text."""
+    from parakh.agents.rules import fill_claim, fill_summary
+    from parakh.agents.verifier import verify_report
+
+    store = demo[0]
+    ids = ("T0049699 T0049760 T0049854 T0049870 T0049875 T0049880 T0049884 T0049998 "
+           "T0050170 T0050189 T0050265 T0050445 T0050484 T0050539").split()
+    real = fill_claim({"statement": "All incoming funds were passed through, with {total_out} outflow representing "
+                                    "{share_passed_through} of the inflow within 48 hours.",
+                       "txn_ids": ids, "accounts": [HUB]}, store, HUB)
+    assert "{" not in real["statement"] and "₹66,41,114" in real["statement"] and "97%" in real["statement"]
+    unknown = fill_claim({"statement": "AC387042 moved money at {velocity}.", "txn_ids": ids[:2], "accounts": []},
+                         store, HUB)
+    result = verify_report({"verdict": "suspicious", "claims": [real, unknown]}, store, HUB)
+    assert result["claim_results"][0]["ok"]
+    assert not result["claim_results"][1]["ok"] and "placeholder" in result["claim_results"][1]["problems"][0]
+    # Summaries come out in Indian grouping with readable pattern names.
+    assert fill_summary("received ₹6,869,564, a gather_scatter hub", {}) == "received ₹68,69,564, a gather-scatter hub"

@@ -2,7 +2,7 @@ from fakes import FakeLLM
 
 from parakh.agents.graph import Deps, build_case_graph
 from parakh.agents.service import CaseService
-from parakh.agents.triage import rules_report, triage_by_score, triage_with_llm
+from parakh.agents.triage import brief, triage_by_score, triage_with_llm
 from parakh.config import Settings
 from parakh.patterns.library import PatternLibrary
 from parakh.storage.cases import MemoryRepository
@@ -84,17 +84,10 @@ def test_decision_after_restart_still_works(store):
 
 
 def test_triage_selection_respects_budget(store):
-    alerts = [a.brief() for a in screen(store)]
+    alerts = [brief(a.to_dict()) for a in screen(store)]
     chosen = [d for d in triage_with_llm(FakeLLM(), alerts, 3) if d["selected"]]
     assert 0 < len(chosen) <= 3
     assert sum(d["selected"] for d in triage_by_score(alerts, 3)) == 3
-
-
-def test_rules_report_shape(store):
-    alert = screen(store)[0].to_dict()
-    r = rules_report(alert)
-    assert r["verdict"] in {"suspicious", "not_suspicious"}
-    assert r["claims"]
 
 
 def test_structural_candidates_follow_the_shape_of_the_flow():

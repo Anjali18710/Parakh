@@ -2,7 +2,7 @@
 
 Loads the transaction file once and keeps two things strictly apart:
   * `df`     – what the agents may see (no labels).
-  * `labels` – ground truth, used only by the evaluation code.
+  * `labels` – the answer key of the synthetic data (which transfers are laundering), never shown to the agents.
 """
 from __future__ import annotations
 
@@ -89,7 +89,7 @@ class TransactionStore:
         ids = [t for t in txn_ids if t in self.by_id.index]
         return self.by_id.loc[ids]
 
-    # --- ground truth (evaluation only) -------------------------------------
+    # --- answer key (tests only) -------------------------------------------
     @cached_property
     def laundering_accounts(self) -> dict[str, set[str]]:
         """account -> set of laundering instance ids it took part in."""
@@ -100,8 +100,3 @@ class TransactionStore:
             for acc in (row.from_account, row.to_account):
                 out.setdefault(acc, set()).add(row.instance_id)
         return out
-
-    @cached_property
-    def instance_patterns(self) -> dict[str, str]:
-        bad = self.labels[self.labels.is_laundering == 1]
-        return dict(zip(bad.instance_id, bad.pattern))

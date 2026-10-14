@@ -94,13 +94,3 @@ def test_case_flow(store):
         assert flow["inflows"] or flow["outflows"]
         assert flow["total_in"] >= 0 and 0 <= flow["passed_through"] <= 1
         assert any(p["cited"] for p in flow["inflows"] + flow["outflows"])
-
-
-def test_evaluations_endpoint(store, tmp_path, monkeypatch):
-    import json as _json
-
-    import parakh.api.main as api_main
-    (tmp_path / "x.json").write_text(_json.dumps({"name": "x", "updated_at": "2026-01-01", "results": {}}))
-    monkeypatch.setattr(api_main, "PUBLISHED_DIR", tmp_path)
-    with client(store) as c:
-        assert [e["name"] for e in c.get("/api/evaluations").json()] == ["x"]
