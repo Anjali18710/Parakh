@@ -284,7 +284,7 @@ export function CaseFile({ caseId, onChanged }: { caseId: string; onChanged: () 
                         {res && !res.ok && <p className="problem">Fact-check: {res.problems.join('; ')}</p>}
                         {cl.corrected_from && (
                           <p className="corrected">
-                            Total corrected by the fact-checker from the cited transactions (the agent wrote {cl.corrected_from}).
+                            Corrected by the fact-checker from the cited transactions (the agent wrote {cl.corrected_from}).
                           </p>
                         )}
                       </div>

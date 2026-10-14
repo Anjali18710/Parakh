@@ -61,6 +61,47 @@ def _amounts_with_tolerance(text: str) -> list[tuple[float, float]]:
     return found
 
 
+_NUMBER_WORDS = ["zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten", "eleven",
+                 "twelve", "thirteen", "fourteen", "fifteen", "sixteen", "seventeen", "eighteen", "nineteen", "twenty"]
+_NOUNS = {
+    "senders": r"senders?|sources?|payers?|depositors?|remitters?",
+    "recipients": r"recipients?|beneficiar(?:y|ies)|payees?|destinations?",
+    "accounts": r"accounts?|counterpart(?:y|ies)|parties|party",
+    "transactions": r"payments?|transactions?|transfers?|credits?|debits?|inflows?|outflows?|deposits?|remittances?",
+}
+_STOP = r"(?:" + "|".join(_NUMBER_WORDS) + r"|in|to|from|of|on|at|by|for|with|within|over|and|or|than|per)\b"
+_COUNT = re.compile(
+    r"(?<![\d.,₹])\b(\d{1,3}|" + "|".join(_NUMBER_WORDS[1:]) + r")\s+((?:(?!" + _STOP + r")[A-Za-z/-]+\s+){0,3}?)("
+    + "|".join(f"(?P<{k}>{v})" for k, v in _NOUNS.items()) + r")\b", re.I)
+
+
+def count_mentions(statement: str, txns, case_account: str | None) -> list[dict]:
+    """Counts stated in a sentence ("eight distinct senders", "6 payments") that the cited rows contradict.
+
+    Returns one entry per wrong count with the text to replace and the correct number.
+    """
+    if txns is None or len(txns) == 0:
+        return []
+    others = lambda col: {a for a in txns[col] if a != case_account}  # noqa: E731
+    truth = {"senders": len(others("from_account")), "recipients": len(others("to_account")),
+             "transactions": len(txns)}
+    truth["accounts"] = len(others("from_account") | others("to_account"))
+    wrong = []
+    for m in _COUNT.finditer(statement):
+        raw = m.group(1).lower()
+        n = int(raw) if raw.isdigit() else _NUMBER_WORDS.index(raw)
+        kind = next(k for k in _NOUNS if m.group(k))
+        allowed = {truth[kind]} if kind != "accounts" else {truth["accounts"], truth["senders"], truth["recipients"]}
+        if n not in allowed:
+            expected = truth[kind]
+            fixed = (_NUMBER_WORDS[expected] if not raw.isdigit() and expected < len(_NUMBER_WORDS) else str(expected))
+            if raw[0].isupper() if not raw.isdigit() else False:
+                fixed = fixed.capitalize()
+            wrong.append({"text": m.group(1), "start": m.start(1), "end": m.end(1), "stated": n,
+                          "expected": expected, "replacement": fixed, "noun": m.group(3)})
+    return wrong
+
+
 def _candidates(amounts: list[float]) -> list[float]:
     if not amounts:
         return []
@@ -105,6 +146,9 @@ def verify_report(report: dict, store: TransactionStore, case_account: str,
                 problems.append(f"amount ₹{inr_plain(value)} in the statement does not match the cited transactions "
                                 f"(they total ₹{inr_plain(sum(amounts))})")
                 break
+        for w in count_mentions(claim.get("statement", ""), txns, case_account):
+            problems.append(f"count '{w['text']} {w['noun']}' does not match the cited transactions "
+                            f"({w['expected']} {w['noun']})")
         if claim.get("count") is not None:
             n = int(claim["count"])
             allowed = {len(ids), len(involved), max(len(involved) - 1, 0),

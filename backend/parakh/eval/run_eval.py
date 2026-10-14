@@ -1,213 +1,281 @@
-"""Experiments: how much do the agents add over rules, and what does each part contribute?
+"""Evaluation: how much do the agents add over rules, and what does each guardrail contribute?
 
-Modes compared on the *same* random sample of rule alerts:
-  rules           – screening rules only (score >= 2 means suspicious)
-  single          – one agent with every tool, no separate pattern agent, verifier not enforced
-  multi_noverify  – full agent team, verifier measured but not enforced
-  multi           – full agent team with the fact-checking loop
+The same sample of rule alerts goes through four setups:
 
-Example:
-    python -m parakh.eval.run_eval --sample 40 --modes rules,single,multi_noverify,multi --sleep 2
-    python -m parakh.eval.run_eval --triage --budget 20
+  rules          screening rules alone (rule score >= 2 means suspicious)
+  single         one agent with every tool; no separate pattern agent; no fact-check loop
+  no_guardrails  the agent team, but no shape rules and no fact-check loop (agents decide everything)
+  full           the agent team with shape rules and the fact-check / correction loop (what the app runs)
 
-Results go to results/ as JSON (every case, for failure analysis) and Markdown (summary table).
+Every case result is saved as soon as it finishes, so a run that hits the LLM provider's daily
+limit can be resumed with the same command the next day. When all cases are done (or on demand
+with --summarise) the summary is written to evaluation/<name>.json, which the dashboard shows.
+
+Examples:
+    python -m parakh.eval.run_eval --name demo --sample 30
+    python -m parakh.eval.run_eval --name demo --summarise
+    DATA_PATH=data/ibm_sample.csv.gz python -m parakh.eval.run_eval --name ibm --sample 30
 """
 from __future__ import annotations
 
 import argparse
 import json
 import random
+import sys
 import time
 from collections import Counter
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pandas as pd
 
 from parakh.agents.graph import Deps, build_case_graph
 from parakh.agents.llm import UsageTracker, get_llm
-from parakh.agents.triage import rules_report, triage_by_score, triage_with_llm
-from parakh.config import settings
+from parakh.agents.service import load_or_screen
+from parakh.agents.triage import rules_report
+from parakh.config import BACKEND_DIR, settings
 from parakh.data.store import TransactionStore
 from parakh.patterns.library import PatternLibrary
 from parakh.tools.investigation import InvestigationTools
-from parakh.agents.service import load_or_screen
 
-ALL_MODES = ["rules", "single", "multi_noverify", "multi"]
+ALL_MODES = ["rules", "single", "no_guardrails", "full"]
+MODE_INFO = {
+    "rules": "Screening rules alone",
+    "single": "One agent with every tool",
+    "no_guardrails": "Agent team, agents decide everything",
+    "full": "Agent team with shape rules and fact-check loop",
+}
+RUNS_DIR = BACKEND_DIR / "results"
+PUBLISHED_DIR = BACKEND_DIR / "evaluation"
+
+
+class DailyLimitReached(Exception):
+    pass
+
+
+def _is_daily_limit(exc: Exception) -> bool:
+    text = str(exc).lower()
+    return ("per day" in text or "tpd" in text or "rpd" in text) and ("rate" in text or "limit" in text)
+
+
+def _is_rate_limit(exc: Exception) -> bool:
+    text = str(exc).lower()
+    return "429" in text or "rate limit" in text or "rate_limit" in text
 
 
 def load_roles(data_path: str) -> dict[str, str]:
-    path = Path(data_path.replace("transactions", "account_roles").replace(".csv.gz", ".csv"))
+    path = Path(str(data_path).replace("transactions", "account_roles").replace(".csv.gz", ".csv"))
     if path.exists() and path != Path(data_path):
         return pd.read_csv(path, index_col=0).role.to_dict()
     return {}
 
 
-def run_case(mode: str, alert: dict, deps: Deps | None, graphs: dict) -> dict:
+def screening_coverage(alerts: dict, truth: dict, roles: dict) -> dict:
+    """How many laundering accounts the rules alert on at all. External source accounts (where criminal money
+    enters from outside the bank) are not customers the bank could alert on, so they are left out."""
+    customers = [acc for acc in truth if roles.get(acc) != "external source"]
+    return {"alerts": len(alerts), "laundering_accounts": len(customers),
+            "laundering_accounts_alerted": sum(acc in alerts for acc in customers)}
+
+
+def pick_sample(alerts: list[dict], truth: dict, n: int, seed: int) -> list[str]:
+    """Half truly-laundering alerts, half not, so precision and recall are both meaningful at small n."""
+    rng = random.Random(seed)
+    bad = [a["account"] for a in alerts if a["account"] in truth]
+    good = [a["account"] for a in alerts if a["account"] not in truth]
+    k_bad = min(len(bad), n // 2)
+    k_good = min(len(good), n - k_bad)
+    sample = rng.sample(bad, k_bad) + rng.sample(good, k_good)
+    rng.shuffle(sample)
+    return sample
+
+
+def run_one(mode: str, alert: dict, deps: Deps | None, graphs: dict) -> dict:
     if mode == "rules":
         report = rules_report(alert)
-        # Rule alerts are not written claims, so fact-checking them is not meaningful.
-        return {"report": report, "verification": None,
-                "usage": {"llm_calls": 0, "input_tokens": 0, "output_tokens": 0, "est_cost_usd": 0.0},
-                "seconds": 0.0, "tool_calls": 0}
+        return {"verdict": report["verdict"], "pattern_id": report["pattern_id"], "risk_score": report["risk_score"],
+                "tokens": 0, "cost_usd": 0.0, "seconds": 0.0}
     tracker = UsageTracker()
     start = time.time()
-    graph = graphs[mode]
-    state = graph.invoke(
+    state = graphs[mode].invoke(
         {"case_id": f"eval-{mode}-{alert['account']}", "account": alert["account"], "alert": alert, "mode": mode,
          "analyst_notes": [], "evidence": [], "timeline": [], "tool_calls": 0},
-        {"callbacks": [tracker], "recursion_limit": 60},
-    )
-    return {"report": state.get("report"), "verification": state.get("verification"),
-            "pattern": state.get("pattern"), "usage": tracker.summary(settings),
-            "seconds": round(time.time() - start, 2), "tool_calls": state.get("tool_calls", 0),
-            "report_attempts": state.get("report_attempts", 0)}
-
-
-def score(rows: list[dict], store: TransactionStore, roles: dict[str, str]) -> dict:
-    truth = store.laundering_accounts
-    patterns = store.instance_patterns
-    tp = fp = fn = tn = 0
-    pattern_hits = pattern_total = 0
-    claims_ok = claims_total = 0
-    false_alarm_roles: Counter = Counter()
-    errors = 0
-    for r in rows:
-        if r.get("error"):
-            errors += 1
-            continue
-        acc = r["account"]
-        is_bad = acc in truth
-        said_bad = (r["report"] or {}).get("verdict") == "suspicious"
-        if is_bad and said_bad:
-            tp += 1
-            true_pats = {patterns.get(i) for i in truth[acc]}
-            pattern_total += 1
-            pattern_hits += (r["report"].get("pattern_id") in true_pats)
-        elif said_bad:
-            fp += 1
-            false_alarm_roles[roles.get(acc, "unknown")] += 1
-        elif is_bad:
-            fn += 1
-        else:
-            tn += 1
-        v = r.get("verification") or {}
-        claims_ok += v.get("claims_verified", 0)
-        claims_total += v.get("claims_total", 0)
-    n = tp + fp + fn + tn
-    precision = tp / (tp + fp) if tp + fp else 0.0
-    recall = tp / (tp + fn) if tp + fn else 0.0
-    f1 = 2 * precision * recall / (precision + recall) if precision + recall else 0.0
-    usage = [r["usage"] for r in rows if r.get("usage")]
-    secs = [r["seconds"] for r in rows if "seconds" in r]
+        {"callbacks": [tracker], "recursion_limit": 60})
+    report = state.get("report") or {}
+    v = state.get("verification") or {}
+    usage = tracker.summary(settings)
     return {
-        "cases": n, "errors": errors, "tp": tp, "fp": fp, "fn": fn, "tn": tn,
-        "precision": round(precision, 3), "recall": round(recall, 3), "f1": round(f1, 3),
-        "accuracy": round((tp + tn) / n, 3) if n else 0.0,
-        "pattern_accuracy": round(pattern_hits / pattern_total, 3) if pattern_total else None,
-        "claim_support_rate": round(claims_ok / claims_total, 3) if claims_total else None,
-        "unsupported_claims": claims_total - claims_ok,
-        "false_alarms_by_role": dict(false_alarm_roles),
-        "avg_tokens": round(sum(u["input_tokens"] + u["output_tokens"] for u in usage) / len(usage)) if usage else 0,
-        "avg_cost_usd": round(sum(u["est_cost_usd"] for u in usage) / len(usage), 5) if usage else 0.0,
-        "avg_seconds": round(sum(secs) / len(secs), 1) if secs else 0.0,
+        "verdict": report.get("verdict"), "pattern_id": report.get("pattern_id"), "risk_score": report.get("risk_score"),
+        "pattern_source": (state.get("pattern") or {}).get("source"),
+        "claims_total": v.get("claims_total", 0), "claims_verified": v.get("claims_verified", 0),
+        "claims_corrected": len(v.get("corrected_claims", [])), "claims_removed": len(v.get("removed_claims", [])),
+        "report_attempts": state.get("report_attempts", 0), "tool_calls": state.get("tool_calls", 0),
+        "tokens": usage["input_tokens"] + usage["output_tokens"], "cost_usd": usage["est_cost_usd"],
+        "seconds": round(time.time() - start, 1),
     }
 
 
-def markdown(results: dict, meta: dict) -> str:
-    lines = [f"# Parakh evaluation ({meta['timestamp']})", "",
-             f"Data: `{meta['data']}`. Sample: {meta['sample']} rule alerts "
-             f"({meta['laundering_in_sample']} truly laundering). Model: {meta['model']}.", "",
-             "| Mode | Precision | Recall | F1 | Pattern accuracy | Claims supported | Avg tokens | Avg cost (USD) | Avg time (s) |",
+def summarise(rows: list[dict], meta: dict) -> dict:
+    by_mode: dict[str, list[dict]] = {}
+    for r in rows:
+        by_mode.setdefault(r["mode"], []).append(r)
+    results = {}
+    for mode in [m for m in ALL_MODES if m in by_mode]:
+        rs = [r for r in by_mode[mode] if not r.get("error")]
+        tp = sum(r["truly_laundering"] and r["verdict"] == "suspicious" for r in rs)
+        fp = sum(not r["truly_laundering"] and r["verdict"] == "suspicious" for r in rs)
+        fn = sum(r["truly_laundering"] and r["verdict"] != "suspicious" for r in rs)
+        tn = sum(not r["truly_laundering"] and r["verdict"] != "suspicious" for r in rs)
+        precision = tp / (tp + fp) if tp + fp else 0.0
+        recall = tp / (tp + fn) if tp + fn else 0.0
+        caught = [r for r in rs if r["truly_laundering"] and r["verdict"] == "suspicious"]
+        pattern_hits = sum(r["pattern_id"] in r["true_patterns"] for r in caught)
+        claims_total = sum(r.get("claims_total", 0) for r in rs)
+        llm_rows = [r for r in rs if r.get("tokens")]
+        results[mode] = {
+            "label": MODE_INFO[mode], "cases": len(rs), "errors": len(by_mode[mode]) - len(rs),
+            "tp": tp, "fp": fp, "fn": fn, "tn": tn,
+            "precision": round(precision, 3), "recall": round(recall, 3),
+            "f1": round(2 * precision * recall / (precision + recall), 3) if precision + recall else 0.0,
+            "innocent_cleared": round(tn / (tn + fp), 3) if tn + fp else None,
+            "pattern_accuracy": round(pattern_hits / len(caught), 3) if caught else None,
+            "claims_total": claims_total,
+            "claims_verified": sum(r.get("claims_verified", 0) for r in rs),
+            "claims_corrected": sum(r.get("claims_corrected", 0) for r in rs),
+            "claims_removed": sum(r.get("claims_removed", 0) for r in rs),
+            "avg_tokens": round(sum(r["tokens"] for r in llm_rows) / len(llm_rows)) if llm_rows else 0,
+            "avg_cost_usd": round(sum(r["cost_usd"] for r in llm_rows) / len(llm_rows), 5) if llm_rows else 0.0,
+            "avg_seconds": round(sum(r["seconds"] for r in llm_rows) / len(llm_rows), 1) if llm_rows else 0.0,
+            "false_alarms_by_role": dict(Counter(r["role"] or "unknown" for r in rs
+                                                 if not r["truly_laundering"] and r["verdict"] == "suspicious")),
+            "missed_by_pattern": dict(Counter(p for r in rs if r["truly_laundering"] and r["verdict"] != "suspicious"
+                                              for p in r["true_patterns"])),
+        }
+    cases = [{k: r.get(k) for k in ("mode", "account", "truly_laundering", "true_patterns", "role", "verdict",
+                                     "pattern_id", "risk_score", "claims_total", "claims_verified", "error")}
+             for r in rows]
+    return {**meta, "updated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            "complete": all(len(by_mode.get(m, [])) == meta["sample_size"] for m in meta["modes"]),
+            "results": results, "cases": cases}
+
+
+def markdown(summary: dict) -> str:
+    lines = [f"# Parakh evaluation: {summary['name']}", "",
+             f"{summary['sample_size']} rule alerts ({summary['laundering_in_sample']} truly laundering), "
+             f"model `{summary['model']}`, data `{summary['data']}`.", "",
+             f"Screening coverage: the rules alert on {summary['screening']['laundering_accounts_alerted']} of "
+             f"{summary['screening']['laundering_accounts']} laundering accounts.", "",
+             "| Setup | Precision | Recall | F1 | Innocent cleared | Pattern accuracy | Claims verified | Avg tokens | Avg cost (USD) |",
              "|---|---|---|---|---|---|---|---|---|"]
-    for mode, m in results.items():
-        pa = "–" if m["pattern_accuracy"] is None else f"{m['pattern_accuracy']:.0%}"
-        cs = "–" if m["claim_support_rate"] is None else f"{m['claim_support_rate']:.0%}"
-        lines.append(f"| {mode} | {m['precision']:.0%} | {m['recall']:.0%} | {m['f1']:.2f} | {pa} | {cs} | "
-                     f"{m['avg_tokens']:,} | {m['avg_cost_usd']:.4f} | {m['avg_seconds']} |")
-    lines += ["", "False alarms by account type (who got wrongly flagged):", ""]
-    for mode, m in results.items():
-        lines.append(f"- **{mode}**: {m['false_alarms_by_role'] or 'none'}")
+    pct = lambda v: "–" if v is None else f"{v:.0%}"  # noqa: E731
+    for mode, m in summary["results"].items():
+        claims = f"{m['claims_verified']}/{m['claims_total']}" if m["claims_total"] else "–"
+        lines.append(f"| {m['label']} | {pct(m['precision'])} | {pct(m['recall'])} | {m['f1']:.2f} | "
+                     f"{pct(m['innocent_cleared'])} | {pct(m['pattern_accuracy'])} | {claims} | {m['avg_tokens']:,} | "
+                     f"{m['avg_cost_usd']:.4f} |")
     return "\n".join(lines) + "\n"
 
 
 def main() -> None:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    p.add_argument("--name", default="demo", help="name of this evaluation run (results are resumed by name)")
     p.add_argument("--data", default=settings.data_path)
     p.add_argument("--modes", default=",".join(ALL_MODES))
-    p.add_argument("--sample", type=int, default=40)
+    p.add_argument("--sample", type=int, default=30)
     p.add_argument("--seed", type=int, default=42)
-    p.add_argument("--sleep", type=float, default=0.0, help="pause between cases to respect API rate limits")
-    p.add_argument("--triage", action="store_true", help="evaluate the triage agent instead")
-    p.add_argument("--budget", type=int, default=20)
-    p.add_argument("--out", default="results")
+    p.add_argument("--sleep", type=float, default=2.0, help="pause between LLM cases (seconds)")
+    p.add_argument("--only", help="run only these setups now (comma-separated); the rest can run later")
+    p.add_argument("--summarise", action="store_true", help="only rebuild the summary from saved results")
+    p.add_argument("--out", default=str(RUNS_DIR))
+    p.add_argument("--publish", default=str(PUBLISHED_DIR), help="where the dashboard reads summaries from")
     a = p.parse_args()
 
     store = TransactionStore.from_csv(a.data)
-    alerts = load_or_screen(store, a.data)
+    alerts = {x["account"]: x for x in load_or_screen(store, a.data)}
+    truth, patterns = store.laundering_accounts, store.instance_patterns
     roles = load_roles(a.data)
-    truth = store.laundering_accounts
-    out = Path(a.out)
-    out.mkdir(exist_ok=True)
-    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    run_dir = Path(a.out) / a.name
+    run_dir.mkdir(parents=True, exist_ok=True)
+    meta_path, rows_path = run_dir / "meta.json", run_dir / "cases.jsonl"
 
-    if a.triage:
-        briefs = [{"account": x["account"], "score": x["score"],
-                   "signals": [f"{s['name']}: {s['detail']}" for s in x["signals"]]} for x in alerts]
-        pool = briefs[: max(60, a.budget * 4)]
-        res = {}
-        for name, fn in [("rules_top_score", lambda: triage_by_score(pool, a.budget)),
-                         ("triage_agent", lambda: triage_with_llm(get_llm(), pool, a.budget))]:
-            chosen = [d["account"] for d in fn() if d["selected"]]
-            hits = [c for c in chosen if c in truth]
-            inst = set().union(*(truth[c] for c in hits)) if hits else set()
-            res[name] = {"opened": len(chosen), "laundering": len(hits),
-                         "precision": round(len(hits) / len(chosen), 3) if chosen else 0, "instances_found": len(inst)}
-        print(json.dumps(res, indent=2))
-        (out / f"triage_{stamp}.json").write_text(json.dumps(res, indent=2))
-        return
+    if meta_path.exists():
+        meta = json.loads(meta_path.read_text())
+        print(f"Resuming '{a.name}': {meta['sample_size']} alerts, modes {', '.join(meta['modes'])}")
+    else:
+        sample = pick_sample(list(alerts.values()), truth, a.sample, a.seed)
+        meta = {"name": a.name, "data": Path(a.data).name, "seed": a.seed, "sample": sample,
+                "sample_size": len(sample), "laundering_in_sample": sum(x in truth for x in sample),
+                "modes": [m.strip() for m in a.modes.split(",") if m.strip()],
+                "model": settings.gemini_model if settings.llm_provider == "gemini" else settings.groq_model,
+                "created_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                "screening": screening_coverage(alerts, truth, roles)}
+        meta_path.write_text(json.dumps(meta, indent=2))
 
-    modes = [m.strip() for m in a.modes.split(",") if m.strip()]
-    rng = random.Random(a.seed)
-    sample = rng.sample(alerts, min(a.sample, len(alerts)))
-    needs_llm = any(m != "rules" for m in modes)
-    llm = get_llm() if needs_llm else None
-    deps = Deps(llm, store, InvestigationTools(store), PatternLibrary(), settings)
-    graphs = {}
-    if needs_llm:
-        graphs = {
-            "single": build_case_graph(deps, "single", human_review=False, enforce_verifier=False),
-            "multi_noverify": build_case_graph(deps, "multi", human_review=False, enforce_verifier=False),
-            "multi": build_case_graph(deps, "multi", human_review=False, enforce_verifier=True),
-        }
+    done = []
+    if rows_path.exists():
+        done = [json.loads(line) for line in rows_path.read_text().splitlines() if line.strip()]
+    finished = {(r["mode"], r["account"]) for r in done if not r.get("error")}
 
-    results, all_rows = {}, {}
-    for mode in modes:
-        rows = []
-        for i, alert in enumerate(sample, 1):
-            try:
-                r = run_case(mode, alert, deps, graphs)
-            except Exception as exc:  # keep going; failures are counted and reported
-                r = {"error": f"{type(exc).__name__}: {exc}"}
-            r.update({"account": alert["account"], "truly_laundering": alert["account"] in truth,
-                      "role": roles.get(alert["account"]), "alert_score": alert["score"]})
-            rows.append(r)
-            verdict = (r.get("report") or {}).get("verdict", r.get("error", "?"))
-            print(f"[{mode}] {i}/{len(sample)} {alert['account']} -> {verdict}", flush=True)
-            if mode != "rules" and a.sleep:
-                time.sleep(a.sleep)
-        results[mode] = score(rows, store, roles)
-        all_rows[mode] = rows
+    if not a.summarise:
+        run_modes = [m.strip() for m in a.only.split(",")] if a.only else meta["modes"]
+        needs_llm = any(m != "rules" for m in run_modes)
+        deps = graphs = None
+        if needs_llm:
+            store_tools = InvestigationTools(store)
+            deps = Deps(get_llm(), store, store_tools, PatternLibrary(), settings)
+            graphs = {
+                "single": build_case_graph(deps, "single", human_review=False, enforce_verifier=False, shape_rules=False),
+                "no_guardrails": build_case_graph(deps, "multi", human_review=False, enforce_verifier=False,
+                                                  shape_rules=False),
+                "full": build_case_graph(deps, "multi", human_review=False, enforce_verifier=True, shape_rules=True),
+            }
+        todo = [(m, acc) for m in run_modes for acc in meta["sample"] if (m, acc) not in finished]
+        print(f"{len(todo)} case(s) to run")
+        try:
+            with rows_path.open("a") as out:
+                for i, (mode, acc) in enumerate(todo, 1):
+                    row = {"mode": mode, "account": acc, "truly_laundering": acc in truth,
+                           "true_patterns": sorted({patterns.get(x, "") for x in truth.get(acc, set())}),
+                           "role": roles.get(acc)}
+                    for attempt in (1, 2):
+                        try:
+                            row.update(run_one(mode, alerts[acc], deps, graphs))
+                            row.pop("error", None)
+                            break
+                        except Exception as exc:  # noqa: BLE001 - every failure is recorded, never hidden
+                            if _is_daily_limit(exc):
+                                raise DailyLimitReached(str(exc)) from exc
+                            if _is_rate_limit(exc) and attempt == 1:
+                                print("  rate limited, waiting 60s")
+                                time.sleep(60)
+                                continue
+                            row["error"] = f"{type(exc).__name__}: {str(exc)[:300]}"
+                    out.write(json.dumps(row) + "\n")
+                    out.flush()
+                    done.append(row)
+                    print(f"[{i}/{len(todo)}] {mode:<14} {acc} -> {row.get('verdict', row.get('error'))}", flush=True)
+                    if mode != "rules" and a.sleep:
+                        time.sleep(a.sleep)
+        except DailyLimitReached:
+            print("\nThe LLM provider's daily limit was reached. Progress is saved; run the same command "
+                  "tomorrow to continue.")
+        except KeyboardInterrupt:
+            print("\nStopped. Progress is saved; run the same command to continue.")
 
-    meta = {"timestamp": stamp, "data": a.data, "sample": len(sample), "seed": a.seed,
-            "laundering_in_sample": sum(x["account"] in truth for x in sample),
-            "model": settings.gemini_model if settings.llm_provider == "gemini" else settings.groq_model}
-    (out / f"eval_{stamp}.json").write_text(json.dumps({"meta": meta, "results": results, "cases": all_rows},
-                                                       indent=2, default=str))
-    md = markdown(results, meta)
-    (out / f"eval_{stamp}.md").write_text(md)
-    (out / "latest.md").write_text(md)
-    print("\n" + md)
+    # Keep only the latest result per (mode, account).
+    latest: dict[tuple, dict] = {}
+    for r in done:
+        latest[(r["mode"], r["account"])] = r
+    summary = summarise(list(latest.values()), meta)
+    (run_dir / "summary.json").write_text(json.dumps(summary, indent=2))
+    (run_dir / "summary.md").write_text(markdown(summary))
+    publish = Path(a.publish)
+    publish.mkdir(parents=True, exist_ok=True)
+    (publish / f"{a.name}.json").write_text(json.dumps(summary, indent=2))
+    print("\n" + markdown(summary))
+    if not summary["complete"]:
+        print("Not all cases are done yet; the summary covers what has finished so far.")
+    sys.exit(0)
 
 
 if __name__ == "__main__":

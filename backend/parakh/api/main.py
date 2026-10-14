@@ -4,6 +4,7 @@ Run locally:  uvicorn parakh.api.main:app --reload
 """
 from __future__ import annotations
 
+import json
 import logging
 import os
 import threading
@@ -17,6 +18,7 @@ from pydantic import BaseModel, Field
 
 from parakh.agents.service import CaseService
 from parakh.config import settings
+from parakh.eval.run_eval import PUBLISHED_DIR
 from parakh.tools.flow import case_flow
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -165,6 +167,18 @@ def create_app(service: CaseService | None = None, require_llm_key: bool = True)
             raise HTTPException(404, "Case not found")
         ids = [t for c in (case.get("report") or {}).get("claims", []) for t in c.get("txn_ids", [])]
         return case_flow(svc.store, case["account"], ids)
+
+    @app.get("/api/evaluations")
+    def evaluations():
+        """Published evaluation summaries (written by `python -m parakh.eval.run_eval`), newest first."""
+        out = []
+        for path in sorted(PUBLISHED_DIR.glob("*.json")):
+            try:
+                out.append(json.loads(path.read_text()))
+            except ValueError:
+                continue
+        out.sort(key=lambda e: e.get("updated_at", ""), reverse=True)
+        return out
 
     @app.post("/api/cases/{case_id}/decision")
     def decide(case_id: str, req: DecisionRequest):

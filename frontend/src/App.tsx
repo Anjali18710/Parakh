@@ -3,6 +3,7 @@ import { api, errorMessage, type CaseSummary, type Health, type Run, type Stats 
 import { count } from './format'
 import { Queue } from './Queue'
 import { CaseFile } from './CaseFile'
+import { Evaluation } from './Evaluation'
 
 export default function App() {
   const [health, setHealth] = useState<Health | null>(null)
@@ -13,6 +14,7 @@ export default function App() {
   const [numCases, setNumCases] = useState(5)
   const [error, setError] = useState<string | null>(null)
   const [starting, setStarting] = useState(false)
+  const [view, setView] = useState<'cases' | 'evaluation'>('cases')
 
   const refresh = useCallback(async () => {
     try {
@@ -88,6 +90,12 @@ export default function App() {
             <h1>Parakh</h1>
             <p>AI agents that investigate suspicious accounts</p>
           </div>
+          <nav className="views" aria-label="Views">
+            <button aria-current={view === 'cases' ? 'page' : undefined} onClick={() => setView('cases')}>Cases</button>
+            <button aria-current={view === 'evaluation' ? 'page' : undefined} onClick={() => setView('evaluation')}>
+              Evaluation
+            </button>
+          </nav>
         </div>
 
         {stats && (
@@ -145,6 +153,11 @@ export default function App() {
         </div>
       )}
 
+      {view === 'evaluation' ? (
+        <main className="eval-page">
+          <Evaluation />
+        </main>
+      ) : (
       <main className="workspace">
         <Queue cases={cases} selected={selected} onSelect={setSelected} onOpened={(id) => { setSelected(id); refresh() }} />
         {selected ? (
@@ -159,6 +172,7 @@ export default function App() {
           </section>
         )}
       </main>
+      )}
     </div>
   )
 }

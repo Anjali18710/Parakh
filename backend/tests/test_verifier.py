@@ -91,3 +91,11 @@ def test_summary_amounts_must_be_supported(store):
     claims = [{"statement": "Payment.", "txn_ids": [t], "accounts": [acc]} for t in rows.txn_id]
     bad = {"verdict": "suspicious", "summary": "It moved ₹12,34,56,789 overall.", "claims": claims}
     assert any(i.startswith("summary") for i in verify_report(bad, store, acc)["issues"])
+
+
+def test_counts_in_words_are_checked_but_amount_digits_are_not(store):
+    from parakh.agents.verifier import count_mentions
+    acc, rows = _txns(store, 2)
+    assert count_mentions(f"{acc} sent ₹1,234.00 in two payments.", rows, acc) == []
+    wrong = count_mentions(f"{acc} made three payments.", rows, acc)
+    assert wrong and wrong[0]["expected"] == 2 and wrong[0]["replacement"] == "two"

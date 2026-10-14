@@ -64,29 +64,38 @@ DATA_PATH=data/ibm_sample.csv.gz python -m parakh.eval.run_eval --sample 40
 
 ## Evaluation
 
-`python -m parakh.eval.run_eval` runs every setup on the **same** random sample of rule alerts and reports precision, recall, pattern accuracy, the share of report claims that survive fact-checking, tokens, cost and time per case. It also breaks false alarms down by account type, which is where the failure analysis starts.
+`python -m parakh.eval.run_eval` puts the **same** balanced sample of rule alerts (half truly laundering, half innocent look-alikes) through four setups and checks every verdict against the answer key in the data:
 
 | Setup | What it isolates |
 |---|---|
-| `rules` | Screening rules alone (score ≥ 2 means suspicious) |
-| `single` | One agent with every tool; no pattern agent; fact-checking measured but not enforced |
-| `multi_noverify` | Full agent team; fact-checking measured but not enforced |
-| `multi` | Full agent team with the fact-checking loop |
+| Screening rules alone | The baseline every bank already has |
+| One agent with every tool | Whether splitting the work across specialised agents helps |
+| Agent team, agents decide everything | What the agents get right with no code checking them (no shape rules, no fact-check loop) |
+| Agent team with shape rules and fact-check loop | What the code-enforced guardrails add (this is what the app runs) |
 
-**Rules-only baseline on the demo data** (all 329 alerts):
+It reports precision, recall, the share of innocent look-alikes correctly cleared, pattern accuracy, how many claims were verified, corrected or removed, tokens, cost and time per case, and which kinds of account each setup gets wrong. Results are shown on the dashboard's **Evaluation** page.
 
-| Setup | Precision | Recall | F1 | Pattern accuracy |
-|---|---|---|---|---|
-| rules | 69% | 42% | 0.52 | 52% |
+Every case is saved the moment it finishes, so the run survives Groq's free-tier daily limit: when the limit is hit it stops cleanly, and the same command continues the next day.
 
-The rules miss most laundering accounts that trip only one signal (typically the middle accounts of a scheme), and their false alarms are wholesale distributors and ordinary customers. That gap is what the agents are measured against. Agent results depend on the model and are produced by running the script with an API key; record them here after running.
+```bash
+python -m parakh.eval.run_eval --name demo --sample 30      # run or resume
+python -m parakh.eval.run_eval --name demo --summarise      # rebuild the summary only
+```
 
-### Failure analysis
+**Results so far** (demo data, 30 alerts, 15 truly laundering):
 
-After a run, `results/eval_*.json` holds every case with the agents' verdict, cited claims, fact-check results and the account's true role. Things to look at:
-- false alarms grouped by account type (which innocent behaviour fools the agents)
-- laundering patterns the agents miss or mislabel
-- how many claims the fact-checker rejected with and without the retry loop
+- The screening rules flag only **58%** of laundering accounts at all (184 of 318), which caps what any setup can catch.
+- On the sample, the rules alone reach 77% precision and 67% recall, clear 80% of innocent look-alikes, and miss mostly scatter-gather schemes.
+- The agent setups are being run; their numbers will be added here.
+
+### What broke, and what I changed
+
+| Problem seen in real runs | Fix | Test |
+|---|---|---|
+| The report agent added up its own totals and was off by a few hundred rupees on nearly every try (₹64,07,564 for a true ₹64,07,207) | The agent writes `{total}` and `{count}`; code fills in the numbers. Wrong totals that still slip through are corrected from the cited transactions and shown | `test_wrong_arithmetic_never_reaches_the_analyst` |
+| A hub with 8 senders and 6 recipients was labelled fan-in, then "no pattern fits" | Code measures the flow's shape and removes impossible typologies before the agent chooses; two impossible picks fall back to the best structural fit | `test_hub_is_gather_scatter_even_when_the_agent_says_fan_out_then_none` |
+| A wholesale distributor was flagged suspicious with a risk score of 82 | Account profiles measure repeat counterparties, the largest recipient's share and payment regularity; innocent patterns must fit them | `test_distributor_is_wholesale_and_not_suspicious` |
+| A claim said "eight distinct senders" for seven, and cited one payment twice | Counts written in words or digits are fact-checked and corrected; duplicate citations are dropped | `test_miscounted_senders_and_duplicate_citation_from_real_run` |
 
 ## Run it locally
 
@@ -98,7 +107,7 @@ python -m venv .venv && source .venv/bin/activate
 pip install -r requirements-dev.txt
 cp .env.example .env        # add your GROQ_API_KEY (free at console.groq.com)
 uvicorn parakh.api.main:app --reload
-pytest -q                   # 29 tests, no API key needed (uses a scripted fake model)
+pytest -q                   # 49 tests, no API key needed (scripted and deliberately misbehaving fake models)
 ```
 
 **Dashboard**:
