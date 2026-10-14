@@ -27,7 +27,7 @@ flowchart LR
 |---|---|
 | **Triage** | Reads rule alerts in batches and decides which deserve a full investigation, within a case budget. |
 | **Investigator** | A tool-calling loop with a hard budget (default 6 calls). Uses five tools: account profile, transaction search, time-ordered money tracing, loop detection and shared-destination detection. Is told to actively test innocent explanations. |
-| **Pattern agent** | Retrieves the closest typologies from a FAISS index that contains laundering patterns *and* innocent look-alikes (payroll, wholesale trade, investment transfers, property purchases, family transfers), then picks one and lists what it ruled out. |
+| **Pattern agent** | Code first measures the shape of the money flow (senders, recipients, repeat counterparties, payment regularity, loops) and rules out every typology that shape makes impossible. FAISS adds library matches for the investigator's story. The agent then chooses among what is left, laundering pattern or innocent look-alike, and explains why. If it picks an impossible pattern twice, the best structural fit is used and the trail says so. |
 | **Report agent** | Writes a structured case file. Every claim must cite transaction IDs. |
 | **Fact-checker** | Plain Python. Checks that cited transactions exist, involve the accounts named, and that every amount and count matches. "Nothing found" results (no loops, no shared destinations) are listed separately and accepted only if the investigator really ran the tool that would have found them. Failing reports go back to the report agent (up to 2 retries). |
 | **Human review** | The LangGraph run pauses (`interrupt`). The analyst agrees, overrules, or sends the agents back with instructions, which resumes the same run. |
@@ -43,6 +43,7 @@ flowchart LR
 ### Design decisions worth knowing
 
 - **Tools return summaries, not data.** An LLM can't read 60,000 transactions. Each tool compresses what matters (for example "8 recipients all forwarded money to AC985490 within 72 hours") and attaches the transaction IDs behind it.
+- **Agents choose evidence; code does arithmetic.** The report agent writes `{total}` and `{count}` instead of numbers, and code fills them in from the cited transactions. In early runs the model added up its own totals and was off by a few hundred rupees on almost every try; now it cannot be. If a claim still carries a wrong total after the retries, the fact-checker corrects it from the cited transactions and shows the original next to it.
 - **Fact-checking is code, not another LLM.** Claims are structured (`statement`, `txn_ids`, `accounts`, `amount`, `count`), so they can be checked with arithmetic. The checker understands Indian amounts (₹9.5 lakh, ₹1.2 crore, ₹66,41,114) and ignores dates and IDs.
 - **No label leakage.** Ground-truth labels are split off when data loads and are only visible to the evaluation code. Synthetic account IDs are neutral (`AC123456`), so names can't reveal which accounts are mules.
 - **Hard budgets everywhere.** Tool calls per case, report retries and cases per run are capped, so cost per case is predictable.

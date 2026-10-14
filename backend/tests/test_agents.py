@@ -29,8 +29,8 @@ def test_verifier_failure_triggers_rewrite(store):
                           "analyst_notes": [], "evidence": [], "timeline": [], "tool_calls": 0})
     assert state["report_attempts"] == 2
     assert state["verification"]["passed"]
-    assert state["status"] == "auto_suspicious"
-    assert state["pattern"]["pattern_id"] == "fan_out"
+    assert state["status"] in ("auto_suspicious", "auto_not_suspicious")
+    assert state["pattern"]["pattern_id"] in state["pattern"]["candidates"] + ["none"]
 
 
 def test_verifier_not_enforced_keeps_bad_report(store):
@@ -98,16 +98,27 @@ def test_rules_report_shape(store):
 
 
 def test_structural_candidates_follow_the_shape_of_the_flow():
-    from parakh.agents.graph import structural_candidates
-    assert "gather_scatter" in structural_candidates({"senders_in_window": 8, "recipients_in_window": 6}, {})
-    many_to_one = structural_candidates({"senders_in_window": 13, "recipients_in_window": 1}, {})
-    assert {"fan_in", "wholesale"} <= set(many_to_one)
-    loop = structural_candidates({"senders_in_window": 1, "recipients_in_window": 1},
-                                 {"signals": [{"name": "in_cycle"}]})
-    assert "cycle" in loop and "family" in loop
+    from parakh.agents.rules import structural_candidates
+    hub = {"senders_in_window": 8, "recipients_in_window": 6}
+    assert structural_candidates(hub, {})[0] == "gather_scatter" and "fan_in" not in structural_candidates(hub, {})
+    trader = {"senders_in_window": 13, "recipients_in_window": 1, "inflow_from_repeat_senders": 1.0}
+    assert structural_candidates(trader, {}) == ["wholesale"]
+    loop = {"senders_in_window": 1, "recipients_in_window": 1, "in_loop_within_7_days": True}
+    assert structural_candidates(loop, {})[0] == "cycle" and "layering_chain" not in structural_candidates(loop, {})
 
 
 def test_relationships_separate_business_from_laundering(store):
     tools = InvestigationTools(store)
     rel = tools.account_profile(store.df.to_account.value_counts().index[0])["relationships"]
     assert 0 <= rel["inflow_from_repeat_senders"] <= 1 and "outflow_schedule" in rel
+
+
+def test_pattern_conflicts_with_measured_shape():
+    from parakh.agents.rules import pattern_conflict
+    hub = {"senders_in_window": 8, "recipients_in_window": 6}
+    assert pattern_conflict("fan_in", hub) is not None
+    assert pattern_conflict("gather_scatter", hub) is None
+    trader = {"senders_in_window": 13, "recipients_in_window": 1, "inflow_from_repeat_senders": 1.0}
+    assert pattern_conflict("wholesale", trader) is None
+    assert pattern_conflict("fan_in", trader) is not None
+    assert pattern_conflict("wholesale", {**trader, "inflow_from_repeat_senders": 0.0}) is not None

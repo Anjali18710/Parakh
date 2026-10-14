@@ -32,7 +32,7 @@ from parakh.config import Settings
 from parakh.data.store import TransactionStore
 from parakh.fmt import inr
 from parakh.patterns.library import PatternLibrary
-from parakh.tools.flow import case_flow
+from parakh.agents.rules import correct_claim, fill_claim, fill_summary, pattern_conflict, shape_facts, structural_candidates
 from parakh.tools.investigation import InvestigationTools
 
 Mode = Literal["multi", "single"]
@@ -173,36 +173,6 @@ def _evidence_text(state: CaseState, store: TransactionStore) -> str:
             f"Tool results:\n" + "\n".join(digests))
 
 
-def shape_facts(store: TransactionStore, itools: InvestigationTools, account: str, cited: list[str]) -> dict:
-    """Facts about the shape of the money flow, computed in code so the pattern agent cannot misread them."""
-    flow = case_flow(store, account, cited)
-    rel = (itools.account_profile(account) or {}).get("relationships", {})
-    return {
-        "senders_in_window": flow.get("senders", 0),
-        "recipients_in_window": flow.get("recipients", 0),
-        "share_passed_through": flow.get("passed_through", 0),
-        "activity_span_hours": flow.get("span_hours", 0),
-        **{k: v for k, v in rel.items() if k != "note"},
-    }
-
-
-def structural_candidates(shape: dict, alert: dict) -> list[str]:
-    """Patterns the flow's shape makes plausible, laundering and innocent alike."""
-    s, r = shape.get("senders_in_window", 0), shape.get("recipients_in_window", 0)
-    ids: list[str] = []
-    if s >= 3 and r >= 3:
-        ids += ["gather_scatter", "bipartite"]
-    if s >= 3 and r <= 2:
-        ids += ["fan_in", "wholesale"]
-    if r >= 3 and s <= 2:
-        ids += ["fan_out", "scatter_gather", "payroll"]
-    if s <= 2 and r <= 2:
-        ids += ["layering_chain", "investment", "property"]
-    if any((sig.get("name") if isinstance(sig, dict) else "") == "in_cycle" for sig in alert.get("signals", [])):
-        ids += ["cycle", "family"]
-    return ids
-
-
 @dataclass
 class Deps:
     llm: Any
@@ -242,54 +212,82 @@ def build_case_graph(deps: Deps, mode: Mode = "multi", human_review: bool = True
         }
 
     def classify_pattern(state: CaseState, config) -> dict:
-        # Search with both the investigator's story and the raw screening signals, so a pattern the
-        # summary describes loosely (e.g. a hub that both collects and pays out) is still offered.
-        # Hybrid retrieval: patterns the flow's measured shape makes plausible, plus FAISS matches
-        # for the investigator's story and the screening signals.
+        # Code measures the shape of the money flow and decides which typologies are possible at all.
+        # The agent chooses among those (laundering vs innocent look-alike) and explains why.
         cited = [t for e in state.get("evidence", []) for t in _TXN_ID.findall(e["result"])]
         shape = shape_facts(deps.store, deps.itools, state["account"], cited)
-        candidates: list[dict] = []
-        for pid in structural_candidates(shape, state["alert"]):
-            c = deps.library.get(pid)
-            if c:
-                candidates.append(c)
-        for query, k in ((state.get("investigation_summary", ""), 4), (_signals_text(state["alert"]), 3)):
-            for c in deps.library.search(query, k=k):
-                if c["id"] not in {x["id"] for x in candidates}:
-                    candidates.append(c)
-        candidates = candidates[:8]
+        allowed_ids = structural_candidates(shape, state["alert"])
+        # FAISS adds library entries that match the story; they are offered only if the shape allows them.
+        for query in (state.get("investigation_summary", ""), _signals_text(state["alert"])):
+            for c in deps.library.search(query, k=4):
+                if c["id"] not in allowed_ids and pattern_conflict(c["id"], shape, state["alert"]) is None:
+                    allowed_ids.append(c["id"])
+        allowed = [c for c in (deps.library.get(i) for i in allowed_ids) if c]
+        excluded = [i for i in deps.library.ids() if i not in allowed_ids]
         cand_txt = "\n".join(f"- id={c['id']} ({c['kind']}): {c['description']} Tell-tale checks: {c['tell_tale_checks']}"
-                             for c in candidates)
+                             for c in allowed) or "- id=none: no library pattern fits the measured shape"
         model = deps.llm.with_structured_output(PatternFinding)
-        finding: PatternFinding = model.invoke(
-            [SystemMessage(prompts.PATTERN.format(candidates=cand_txt)),
-             HumanMessage(f"Measured facts (computed from the ledger, trust these over the narrative):\n"
-                          f"{json.dumps(shape)}\n\nInvestigator summary:\n{state.get('investigation_summary', '')}")],
-            config=config)
+        msgs = [SystemMessage(prompts.PATTERN.format(candidates=cand_txt)),
+                HumanMessage(f"Measured facts (computed from the ledger):\n{json.dumps(shape)}\n\n"
+                             f"Investigator summary:\n{state.get('investigation_summary', '')}")]
+        events: list[dict] = []
+        finding: PatternFinding = model.invoke(msgs, config=config)
+        source = "agent"
+        if allowed_ids and finding.pattern_id not in allowed_ids:
+            reason = pattern_conflict(finding.pattern_id, shape, state["alert"]) or "it is not one of the allowed candidates"
+            events.append(_emit(config, _event("verifier", f"rejected pattern '{finding.pattern_id}'", reason)))
+            msgs.append(HumanMessage(f"'{finding.pattern_id}' is not allowed: {reason}. "
+                                     f"Choose exactly one of: {', '.join(allowed_ids)}."))
+            finding = model.invoke(msgs, config=config)
+            if finding.pattern_id not in allowed_ids:
+                # Still outside the allowed set: fall back to the best structural fit.
+                events.append(_emit(config, _event("verifier", f"rejected pattern '{finding.pattern_id}' again",
+                                                   f"used the best structural fit, '{allowed_ids[0]}'")))
+                best = deps.library.get(allowed_ids[0]) or {}
+                finding = PatternFinding(
+                    pattern_id=allowed_ids[0], kind=best.get("kind", "unclear"), confidence=0.6,
+                    reasoning=f"Chosen from the measured shape of the money flow: {best.get('description', '')}",
+                    ruled_out=[i for i in allowed_ids[1:]])
+                source = "rules"
         data = finding.model_dump()
-        if data["pattern_id"] not in deps.library.ids():
-            data["pattern_id"] = "none"
-        data["candidates"] = [c["id"] for c in candidates]
-        data["shape"] = shape
+        lib = deps.library.get(data["pattern_id"])
+        if lib:
+            data["kind"] = lib["kind"]  # laundering vs innocent comes from the library, not the agent
+        elif not allowed_ids:
+            data["pattern_id"], data["kind"] = "none", "unclear"
+        data["ruled_out"] = list(dict.fromkeys([r for r in data["ruled_out"] if r != data["pattern_id"]]))
+        data.update({"candidates": allowed_ids, "excluded_by_shape": excluded, "shape": shape, "source": source})
         return {"pattern": data,
-                "timeline": [_emit(config, _event("pattern", f"matched pattern '{data['pattern_id']}'",
-                                                  {"confidence": data["confidence"], "ruled_out": data["ruled_out"]}))]}
+                "timeline": events + [_emit(config, _event("pattern", f"matched pattern '{data['pattern_id']}'",
+                                                           {"confidence": data["confidence"], "kind": data["kind"],
+                                                            "allowed": allowed_ids}))]}
 
     def write_report(state: CaseState, config) -> dict:
         attempts = state.get("report_attempts", 0)
         pattern = state.get("pattern")
         system = prompts.REPORT.format(account=state["account"])
         if pattern:
-            context = f"Pattern finding:\n{json.dumps(pattern)}"
+            context = f"Pattern finding:\n{json.dumps({k: v for k, v in pattern.items() if k != 'excluded_by_shape'})}"
         else:
             context = "Allowed pattern ids: " + ", ".join(deps.library.ids() + ["none"])
         msgs = [SystemMessage(system),
                 HumanMessage(f"Screening signals:\n{_signals_text(state['alert'])}\n\n{context}\n\n"
                              f"Evidence:\n{_evidence_text(state, deps.store)}")]
-        if attempts > 0 and state.get("verification"):
-            msgs.append(HumanMessage(prompts.REPORT_RETRY.format(issues="\n".join(state["verification"]["issues"]))))
+        previous = state.get("report")
+        if attempts > 0 and state.get("verification") and previous:
+            msgs.append(HumanMessage(prompts.REPORT_RETRY.format(
+                issues="\n".join(state["verification"]["issues"]),
+                previous=json.dumps(previous.get("draft") or previous, ensure_ascii=False))))
         report: CaseReport = deps.llm.with_structured_output(CaseReport).invoke(msgs, config=config)
-        data = report.model_dump()
+        draft = report.model_dump()
+        # Code fills in every number the report states, so totals and counts cannot be miscalculated.
+        data = {**draft, "claims": [fill_claim(c, deps.store) for c in draft["claims"]], "draft": draft}
+        if pattern:
+            data["pattern_id"] = pattern["pattern_id"]
+            data["summary"] = fill_summary(draft["summary"], pattern.get("shape", {}))
+        else:
+            cited = [t for c in draft["claims"] for t in c.get("txn_ids", [])]
+            data["summary"] = fill_summary(draft["summary"], shape_facts(deps.store, deps.itools, state["account"], cited))
         label = "rewrote report after fact-check" if attempts else "wrote report"
         return {"report": data, "report_attempts": attempts + 1,
                 "timeline": [_emit(config, _event("report", label, {"verdict": data["verdict"], "claims": len(data["claims"]),
@@ -297,11 +295,48 @@ def build_case_graph(deps: Deps, mode: Mode = "multi", human_review: bool = True
 
     def verify(state: CaseState, config) -> dict:
         tools_used = {e["tool"] for e in state.get("evidence", [])}
-        result = verify_report(state["report"], deps.store, state["account"], tools_used)
+        pattern = state.get("pattern") or {}
+        shape = pattern.get("shape", {})
+        trusted = [shape.get("total_in", 0), shape.get("total_out", 0)]
+        report = state["report"]
+        result = verify_report(report, deps.store, state["account"], tools_used, trusted_amounts=trusted,
+                               pattern_kind=pattern.get("kind"))
         result["enforced"] = enforce_verifier
-        msg = "all claims verified" if result["passed"] else f"{len(result['issues'])} problem(s) found"
-        return {"verification": result,
-                "timeline": [_emit(config, _event("verifier", msg, result["issues"][:5]))]}
+        update: dict = {}
+        last_try = state.get("report_attempts", 0) > deps.cfg.max_report_retries
+        if enforce_verifier and not result["passed"] and last_try:
+            # Out of retries. Correct miscalculated totals from the cited transactions, remove claims
+            # that cannot be supported, and record both so the analyst sees exactly what changed.
+            problems = {r["index"]: r["problems"] for r in result["claim_results"] if not r["ok"]}
+            bad_checks = {r["index"] for r in result.get("check_results", []) if not r["ok"]}
+            kept, corrected, removed = [], [], []
+            for i, claim in enumerate(report["claims"]):
+                if i not in problems:
+                    kept.append(claim)
+                elif (fixed := correct_claim(claim, problems[i], deps.store)) is not None:
+                    kept.append(fixed)
+                    corrected.append(fixed)
+                else:
+                    removed.append(claim)
+            cleaned = {**report, "claims": kept,
+                       "checks": [c for i, c in enumerate(report.get("checks", [])) if i not in bad_checks]}
+            result = verify_report(cleaned, deps.store, state["account"], tools_used, trusted_amounts=trusted,
+                                   pattern_kind=pattern.get("kind"))
+            result.update({"enforced": True, "removed_claims": removed,
+                           "corrected_claims": [c["statement"] for c in corrected]})
+            update["report"] = cleaned
+            parts = []
+            if corrected:
+                parts.append(f"corrected {len(corrected)} miscalculated total(s)")
+            if removed:
+                parts.append(f"removed {len(removed)} unsupported claim(s)")
+            msg = ", ".join(parts) + "; " + (
+                "all remaining claims verified" if result["passed"] else f"{len(result['issues'])} problem(s) remain")
+        else:
+            msg = "all claims verified" if result["passed"] else f"{len(result['issues'])} problem(s) found"
+        update.update({"verification": result,
+                       "timeline": [_emit(config, _event("verifier", msg, result["issues"][:5]))]})
+        return update
 
     def after_verify(state: CaseState) -> str:
         v = state["verification"]

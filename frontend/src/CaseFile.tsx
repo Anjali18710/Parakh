@@ -282,11 +282,26 @@ export function CaseFile({ caseId, onChanged }: { caseId: string; onChanged: () 
                           ))}
                         </div>
                         {res && !res.ok && <p className="problem">Fact-check: {res.problems.join('; ')}</p>}
+                        {cl.corrected_from && (
+                          <p className="corrected">
+                            Total corrected by the fact-checker from the cited transactions (the agent wrote {cl.corrected_from}).
+                          </p>
+                        )}
                       </div>
                     </li>
                   )
                 })}
               </ol>
+              {(v?.removed_claims?.length ?? 0) > 0 && (
+                <>
+                  <h4>Removed by the fact-checker</h4>
+                  <ul className="removed">
+                    {v!.removed_claims!.map((cl, i) => (
+                      <li key={i}>{cl.statement}</li>
+                    ))}
+                  </ul>
+                </>
+              )}
               {checks.length > 0 && (
                 <>
                   <h4>Also checked, nothing found</h4>
@@ -346,9 +361,20 @@ export function CaseFile({ caseId, onChanged }: { caseId: string; onChanged: () 
                   <strong>{patternName(c.pattern.pattern_id)}</strong>, {Math.round(c.pattern.confidence * 100)}% confident.{' '}
                   {c.pattern.reasoning}
                 </p>
+                {c.pattern.source === 'rules' && (
+                  <p className="aside">
+                    The pattern agent twice chose a pattern the measured facts rule out, so this one was chosen from the
+                    shape of the money flow.
+                  </p>
+                )}
                 {c.pattern.shape && <ShapeFacts shape={c.pattern.shape} />}
-                {c.pattern.ruled_out.length > 0 && (
-                  <p className="aside">Ruled out: {c.pattern.ruled_out.map(patternName).join(', ')}</p>
+                {(c.pattern.excluded_by_shape?.length ?? 0) > 0 && (
+                  <p className="aside">
+                    Not possible for this shape: {c.pattern.excluded_by_shape!.map(patternName).join(', ')}
+                  </p>
+                )}
+                {c.pattern.source !== 'rules' && c.pattern.ruled_out.length > 0 && (
+                  <p className="aside">Ruled out by the agent: {c.pattern.ruled_out.map(patternName).join(', ')}</p>
                 )}
               </section>
             )}
