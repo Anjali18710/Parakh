@@ -9,7 +9,7 @@ export function lakhs(n: number): string {
   return inr.format(n)
 }
 
-export const count = (n: number) => new Intl.NumberFormat('en-IN').format(n)
+export const count = (n: number) => new Intl.NumberFormat('en-IN').format(Math.round(n))
 
 export function shortTime(iso: string): string {
   const d = new Date(iso)
@@ -65,6 +65,7 @@ export const AGENT_LABELS: Record<string, string> = {
   verifier: 'Fact-checker',
   reviewer: 'Human analyst',
   system: 'System',
+  guard: 'Injection guard',
 }
 
 export const TOOL_LABELS: Record<string, string> = {

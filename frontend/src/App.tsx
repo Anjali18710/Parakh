@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react'
 import { api, errorMessage, type CaseSummary, type Health, type Run, type Stats } from './api'
 import { count } from './format'
 import { Queue } from './Queue'
+import { CountUp } from './motion'
 import { CaseFile } from './CaseFile'
 import { Evaluation } from './Evaluation'
 
@@ -102,11 +103,11 @@ export default function App() {
           <dl className="figures">
             <div>
               <dt>Transactions</dt>
-              <dd>{count(stats.transactions)}</dd>
+              <dd><CountUp value={stats.transactions} format={count} ms={1200} /></dd>
             </div>
             <div>
               <dt>Rule alerts</dt>
-              <dd>{count(stats.alerts)}</dd>
+              <dd><CountUp value={stats.alerts} format={count} ms={1200} /></dd>
             </div>
             <div>
               <dt>Claims fact-checked</dt>

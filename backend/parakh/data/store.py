@@ -7,11 +7,12 @@ Loads the transaction file once and keeps two things strictly apart:
 from __future__ import annotations
 
 from functools import cached_property
+from pathlib import Path
 
 import networkx as nx
 import pandas as pd
 
-AGENT_COLUMNS = ["txn_id", "timestamp", "from_account", "to_account", "amount", "payment_format"]
+AGENT_COLUMNS = ["txn_id", "timestamp", "from_account", "to_account", "amount", "payment_format", "remarks"]
 LABEL_COLUMNS = ["txn_id", "is_laundering", "pattern", "instance_id"]
 
 
@@ -24,6 +25,8 @@ class TransactionStore:
                 df[col] = df[col].fillna("")
         if "is_laundering" not in df:
             df["is_laundering"] = 0
+        # Remarks are raw customer text. Tools never pass them to an agent unfiltered (see data/remarks.py).
+        df["remarks"] = df["remarks"].fillna("").astype(str) if "remarks" in df else ""
         df = df.sort_values("timestamp").reset_index(drop=True)
 
         self.labels = df[[c for c in LABEL_COLUMNS if c in df]].set_index("txn_id")
@@ -32,7 +35,27 @@ class TransactionStore:
 
     @classmethod
     def from_csv(cls, path: str) -> "TransactionStore":
-        return cls(pd.read_csv(path))
+        df = pd.read_csv(path)
+        from parakh.data.remarks import remarks_path  # local import keeps the store free of heavier deps
+
+        rp = remarks_path(path)
+        if "remarks" not in df and rp.exists() and rp != Path(path):
+            df = df.merge(pd.read_csv(rp, keep_default_na=False), on="txn_id", how="left")
+        return cls(df)
+
+    def injection_attempts(self, account: str, extra_txn_ids: list[str] | None = None) -> list[dict]:
+        """Remarks on this account's payments (and any other cited payments) that try to instruct an AI."""
+        from parakh.data.remarks import injection_reasons
+
+        rows = pd.concat([self.account_txns(account), self.get_txns(list(extra_txn_ids or []))])
+        rows = rows.drop_duplicates("txn_id")
+        out = []
+        for r in rows[rows.remarks != ""].itertuples():
+            reasons = injection_reasons(r.remarks)
+            if reasons:
+                out.append({"txn_id": r.txn_id, "from": r.from_account, "to": r.to_account,
+                            "amount": float(r.amount), "remark": r.remarks, "reasons": reasons})
+        return out
 
     # --- lookups used by tools ---------------------------------------------
     @cached_property

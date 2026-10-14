@@ -11,3 +11,5 @@ langgraph>=1.0
 langchain-groq>=1.0
 langchain-google-genai>=3.0
 pymongo>=4.8
+langgraph-checkpoint-mongodb>=0.2
+reportlab>=4.0

@@ -144,3 +144,26 @@ class _Misbehaving:
                               claims=claims, checks=[Check(description="No loops found.", tool="find_cycles")],
                               recommended_action="Review.")
         raise NotImplementedError(self.schema)
+
+
+class RecordingLLM(MisbehavingLLM):
+    """A MisbehavingLLM that keeps every piece of text it is sent, to prove what the model can and cannot see."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.seen: list[str] = []
+
+    def invoke(self, msgs, config=None):
+        self.seen.append(_all_text(msgs))
+        return super().invoke(msgs, config)
+
+    def with_structured_output(self, schema):
+        inner = super().with_structured_output(schema)
+        outer = self
+
+        class _Rec:
+            def invoke(self, msgs, config=None):
+                outer.seen.append(_all_text(msgs))
+                return inner.invoke(msgs, config)
+
+        return _Rec()

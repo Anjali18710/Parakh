@@ -48,6 +48,8 @@ class MongoRepository:
             from pymongo import MongoClient
 
             client = MongoClient(uri, serverSelectionTimeoutMS=8000)
+        self.client = client
+        self.db_name = db
         self.db = client[db]
 
     def insert(self, collection, doc):
@@ -65,3 +67,14 @@ class MongoRepository:
 
 def make_repository(uri: str | None, db: str) -> CaseRepository:
     return MongoRepository(uri, db) if uri else MemoryRepository()
+
+
+def make_checkpointer(repo: CaseRepository):
+    """Where paused agent runs are kept: MongoDB when cases are in MongoDB (survives restarts), else memory."""
+    if isinstance(repo, MongoRepository):
+        from langgraph.checkpoint.mongodb import MongoDBSaver
+
+        return MongoDBSaver(repo.client, db_name=repo.db_name)
+    from langgraph.checkpoint.memory import MemorySaver
+
+    return MemorySaver()

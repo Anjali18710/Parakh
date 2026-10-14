@@ -1,6 +1,8 @@
-import { useCallback, useEffect, useState } from 'react'
-import { api, errorMessage, type CaseDetail, type Flow, type TimelineEvent, type Txn } from './api'
+import { useCallback, useEffect, useState, type CSSProperties } from 'react'
+import { api, errorMessage, fileURL, type CaseDetail, type Flow, type TimelineEvent, type Txn } from './api'
 import { FlowGraph } from './FlowGraph'
+import { CountUp, RiskRing } from './motion'
+import { Pipeline } from './Pipeline'
 import {
   AGENT_LABELS, SIGNAL_LABELS, STATUS_LABELS, TOOL_LABELS, hoursText, isWorking, lakhs, patternName, rupees, shortTime,
 } from './format'
@@ -62,6 +64,14 @@ function Trail({ events, live }: { events: TimelineEvent[]; live: boolean }) {
       )}
     </ol>
   )
+}
+
+/** Accounts named in the agents' most recent step, so the flow graph can show what they are tracing. */
+function inFocus(c: CaseDetail): string[] {
+  const last = [...c.timeline].reverse().find((e) => e.action.startsWith('called '))
+  if (!last) return []
+  return Array.from(new Set(JSON.stringify(last.detail ?? '').match(/AC\d{6}/g) ?? [])).filter((a) => a !== c.account)
+    .concat(c.account)
 }
 
 const pct = (v: unknown) => `${Math.round(Number(v) * 100)}%`
@@ -141,6 +151,20 @@ export function CaseFile({ caseId, onChanged }: { caseId: string; onChanged: () 
     }
   }
 
+  async function retry() {
+    setBusy(true)
+    try {
+      await api.post(`/cases/${caseId}/retry`)
+      setError(null)
+      await load()
+      onChanged()
+    } catch (err) {
+      setError(errorMessage(err))
+    } finally {
+      setBusy(false)
+    }
+  }
+
   function showTxns(ids: string[]) {
     const present = ids.filter((id) => document.getElementById(`txn-${id}`))
     setHighlight(present)
@@ -158,6 +182,7 @@ export function CaseFile({ caseId, onChanged }: { caseId: string; onChanged: () 
   const r = c.report
   const v = c.verification
   const checks = r?.checks ?? []
+  const strReady = c.status === 'confirmed_suspicious' || (c.status === 'awaiting_review' && r?.verdict === 'suspicious')
 
   return (
     <section className="casefile" aria-live="polite">
@@ -169,35 +194,43 @@ export function CaseFile({ caseId, onChanged }: { caseId: string; onChanged: () 
             {STATUS_LABELS[c.status] ?? c.status}
           </p>
         </div>
-        {r && (
-          <div className={`verdict ${r.verdict}`}>
-            <div className="score" aria-label={`Risk score ${r.risk_score} out of 100`}>
-              {r.risk_score}
-              <small>/100 risk</small>
+        <div className="head-right">
+          {strReady && (
+            <a className="button str" href={fileURL(`/cases/${caseId}/str.pdf`)} download>
+              <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 2v8M4.5 6.5 8 10l3.5-3.5M3 13h10" /></svg>
+              {c.status === 'confirmed_suspicious' ? 'Download STR' : 'Draft STR'}
+            </a>
+          )}
+          {r && (
+            <div className={`verdict ${r.verdict}`}>
+              <RiskRing score={r.risk_score} verdict={r.verdict} />
+              <div>
+                <strong>{r.verdict === 'suspicious' ? 'Suspicious' : 'Looks innocent'}</strong>
+                <span>{patternName(r.pattern_id)}</span>
+                <small>risk out of 100</small>
+              </div>
             </div>
-            <div>
-              <strong>{r.verdict === 'suspicious' ? 'Suspicious' : 'Looks innocent'}</strong>
-              <span>{patternName(r.pattern_id)}</span>
-            </div>
-          </div>
-        )}
+          )}
+        </div>
       </header>
+
+      <Pipeline c={c} />
 
       {flow && (flow.inflows.length > 0 || flow.outflows.length > 0) && (
         <dl className="strip">
           <div>
             <dt>Money in</dt>
-            <dd>{lakhs(flow.total_in)}</dd>
+            <dd><CountUp value={flow.total_in} format={lakhs} /></dd>
             <span>from {flow.senders} account{flow.senders === 1 ? '' : 's'}</span>
           </div>
           <div>
             <dt>Money out</dt>
-            <dd>{lakhs(flow.total_out)}</dd>
+            <dd><CountUp value={flow.total_out} format={lakhs} /></dd>
             <span>to {flow.recipients} account{flow.recipients === 1 ? '' : 's'}</span>
           </div>
           <div>
             <dt>Passed straight through</dt>
-            <dd>{Math.round(flow.passed_through * 100)}%</dd>
+            <dd><CountUp value={flow.passed_through * 100} format={(n) => `${Math.round(n)}%`} /></dd>
             <span>of what came in</span>
           </div>
           <div>
@@ -213,7 +246,12 @@ export function CaseFile({ caseId, onChanged }: { caseId: string; onChanged: () 
         </dl>
       )}
 
-      {c.status === 'failed' && <p className="banner bad">The agents stopped with an error: {c.error}</p>}
+      {c.status === 'failed' && (
+        <div className="banner bad failed">
+          <span>{c.error?.includes('restart') ? c.error : `The agents stopped with an error: ${c.error}`}</span>
+          <button onClick={retry} disabled={busy}>Retry investigation</button>
+        </div>
+      )}
 
       <div className="case-body">
         <section>
@@ -243,7 +281,28 @@ export function CaseFile({ caseId, onChanged }: { caseId: string; onChanged: () 
         {flow && (flow.inflows.length > 0 || flow.outflows.length > 0) && (
           <section>
             <h3>Where the money went</h3>
-            <FlowGraph flow={flow} onPick={showTxns} />
+            <FlowGraph flow={flow} onPick={showTxns} live={working} focus={working ? inFocus(c) : []} />
+          </section>
+        )}
+
+        {(c.injections?.length ?? 0) > 0 && (
+          <section className="injection" role="alert">
+            <h3>Someone tried to instruct the AI</h3>
+            <p>
+              {c.injections!.length === 1 ? 'A payment remark' : `${c.injections!.length} payment remarks`} on this money
+              trail {c.injections!.length === 1 ? 'reads' : 'read'} like an instruction to an AI reviewer. It was withheld
+              from the agents, who were told only that a manipulation attempt was found.
+            </p>
+            <ul>
+              {c.injections!.map((i) => (
+                <li key={i.txn_id}>
+                  <q>{i.remark}</q>
+                  <span>
+                    {i.txn_id}, {i.from} to {i.to}, {lakhs(i.amount)}. Flagged because it {i.reasons.join(', ')}.
+                  </span>
+                </li>
+              ))}
+            </ul>
           </section>
         )}
 
@@ -270,7 +329,7 @@ export function CaseFile({ caseId, onChanged }: { caseId: string; onChanged: () 
                 {r.claims.map((cl, i) => {
                   const res = v?.claim_results.find((x) => x.index === i)
                   return (
-                    <li key={i} className={res ? (res.ok ? 'ok' : 'bad') : ''}>
+                    <li key={i} className={res ? (res.ok ? 'ok' : 'bad') : ''} style={{ '--i': i } as CSSProperties}>
                       <span className="assay" aria-label={res?.ok ? 'Verified' : 'Not verified'} />
                       <div>
                         <p>{cl.statement}</p>
@@ -335,6 +394,7 @@ export function CaseFile({ caseId, onChanged }: { caseId: string; onChanged: () 
                         <th scope="col">To</th>
                         <th scope="col" className="num">Amount</th>
                         <th scope="col">Via</th>
+                        <th scope="col">Remark</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -346,6 +406,9 @@ export function CaseFile({ caseId, onChanged }: { caseId: string; onChanged: () 
                           <td className={t.to_account === c.account ? 'me' : ''}>{t.to_account}</td>
                           <td className="num">{rupees(t.amount)}</td>
                           <td>{t.payment_format}</td>
+                          <td className={`remark ${t.remark_flagged ? 'flagged' : ''}`}>
+                            {t.remark_flagged ? <>Withheld from agents: <q>{t.remarks}</q></> : t.remarks || ''}
+                          </td>
                         </tr>
                       ))}
                     </tbody>
@@ -368,6 +431,24 @@ export function CaseFile({ caseId, onChanged }: { caseId: string; onChanged: () 
                   </p>
                 )}
                 {c.pattern.shape && <ShapeFacts shape={c.pattern.shape} />}
+                {(c.pattern.precedents?.length ?? 0) > 0 && (
+                  <div className="precedents">
+                    <h4>Learned from past decisions</h4>
+                    <ul>
+                      {c.pattern.precedents!.map((p) => (
+                        <li key={p.case_id} className={p.overruled ? 'overruled' : ''}>
+                          <span className="sim">{Math.round(p.similarity * 100)}% similar</span>
+                          <span>
+                            <strong>{p.account}</strong>: agents said {p.agents_verdict.replace('_', ' ')} (
+                            {patternName(p.agents_pattern).toLowerCase()}),{' '}
+                            {p.overruled ? 'an analyst overruled them' : 'an analyst agreed'}
+                            {p.note ? <>: <q>{p.note}</q></> : '.'}
+                          </span>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
                 {(c.pattern.excluded_by_shape?.length ?? 0) > 0 && (
                   <p className="aside">
                     Not possible for this shape: {c.pattern.excluded_by_shape!.map(patternName).join(', ')}

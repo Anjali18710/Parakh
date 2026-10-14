@@ -9,16 +9,16 @@ import uuid
 from functools import cached_property
 from pathlib import Path
 
-from langgraph.checkpoint.memory import MemorySaver
 from langgraph.types import Command
 
 from parakh.agents.graph import Deps, build_case_graph
+from parakh.agents.memory import CaseMemory
 from parakh.agents.llm import UsageTracker, get_llm
 from parakh.agents.triage import triage_by_score, triage_with_llm
 from parakh.config import Settings, settings as default_settings
 from parakh.data.store import TransactionStore
 from parakh.patterns.library import PatternLibrary
-from parakh.storage.cases import CaseRepository, make_repository, now
+from parakh.storage.cases import CaseRepository, make_checkpointer, make_repository, now
 from parakh.tools.investigation import InvestigationTools
 from parakh.tools.screening import screen
 
@@ -48,6 +48,7 @@ def load_or_screen(store: TransactionStore, data_path: str) -> list[dict]:
     return alerts
 
 OPEN_STATUSES = {"queued", "investigating", "awaiting_review"}
+FINAL_STATUSES = {"confirmed_suspicious", "closed_not_suspicious"}
 
 
 class CaseService:
@@ -59,7 +60,7 @@ class CaseService:
         self.repo = repo or make_repository(self.cfg.mongodb_uri, self.cfg.mongodb_db)
         self._llm = llm
         self._library = library
-        self.checkpointer = MemorySaver()
+        self.checkpointer = make_checkpointer(self.repo)
         self._graphs: dict[str, object] = {}
         self._lock = threading.Lock()
 
@@ -83,6 +84,10 @@ class CaseService:
         return self._library
 
     @cached_property
+    def memory(self) -> CaseMemory:
+        return CaseMemory(self.repo)
+
+    @cached_property
     def itools(self) -> InvestigationTools:
         return InvestigationTools(self.store)
 
@@ -101,7 +106,7 @@ class CaseService:
     def graph(self, mode: str = "multi"):
         with self._lock:
             if mode not in self._graphs:
-                deps = Deps(self.llm, self.store, self.itools, self.library, self.cfg)
+                deps = Deps(self.llm, self.store, self.itools, self.library, self.cfg, self.memory)
                 self._graphs[mode] = build_case_graph(deps, mode=mode, human_review=True,
                                                       enforce_verifier=self.cfg.verifier_enabled,
                                                       checkpointer=self.checkpointer)
@@ -180,7 +185,8 @@ class CaseService:
             live.append(event)
             self.repo.update("cases", case_id, {"timeline": live, "updated_at": now()})
 
-        config = {"configurable": {"thread_id": case_id, "event_sink": event_sink},
+        thread = case.get("thread_id") or case_id
+        config = {"configurable": {"thread_id": thread, "event_sink": event_sink},
                   "callbacks": [tracker], "recursion_limit": 60}
         graph = self.graph(case.get("mode", "multi"))
         if resume is None or resume.get("action") == "reinvestigate":
@@ -205,14 +211,57 @@ class CaseService:
                 "report": values.get("report"), "pattern": values.get("pattern"),
                 "verification": values.get("verification"), "timeline": values.get("timeline", []),
                 "investigation_summary": values.get("investigation_summary"),
+                "injections": values.get("injections", []),
                 "tool_calls": values.get("tool_calls", 0), "decision": values.get("decision"),
                 "analyst_notes": values.get("analyst_notes", []),
                 "usage": usage, "duration_s": round((case.get("duration_s") or 0) + time.time() - started, 1),
             })
+            if status in FINAL_STATUSES:
+                self.memory.remember(self.repo.get("cases", case_id))
         except Exception as exc:
             log.exception("case %s failed", case_id)
             self.repo.update("cases", case_id, {"status": "failed", "error": f"{type(exc).__name__}: {exc}",
                                                 "updated_at": now()})
+
+    # ------------------------------------------------------------ restarts
+    def recover(self) -> dict:
+        """After a restart: restore cases that were waiting for review, mark half-finished ones as interrupted."""
+        restored = interrupted = 0
+        for case in self.repo.list("cases", 5000):
+            if case.get("status") not in ("queued", "investigating", "closing"):
+                continue
+            snap = self.graph(case.get("mode", "multi")).get_state(
+                {"configurable": {"thread_id": case.get("thread_id") or case["_id"]}})
+            if snap.next and "human_review" in snap.next:
+                self.repo.update("cases", case["_id"], {"status": "awaiting_review", "updated_at": now()})
+                restored += 1
+            else:
+                self.repo.update("cases", case["_id"], {
+                    "status": "failed", "updated_at": now(),
+                    "error": "Interrupted by a server restart before the agents finished. Retry to run it again."})
+                interrupted += 1
+        for run in self.repo.list("runs", 500):
+            if run.get("status") in ("triaging", "investigating"):
+                self.repo.update("runs", run["_id"], {"status": "failed", "error": "Interrupted by a server restart"})
+        return {"restored": restored, "interrupted": interrupted}
+
+    def retry(self, case_id: str, background: bool = True) -> dict:
+        """Run a failed or interrupted case again from the start, on a fresh agent thread."""
+        case = self.repo.get("cases", case_id)
+        if case is None:
+            raise KeyError(case_id)
+        if case.get("status") != "failed":
+            raise ValueError(f"case is {case['status']}; only failed cases can be retried")
+        attempt = int(case.get("retries", 0)) + 1
+        self.repo.update("cases", case_id, {
+            "status": "queued", "error": None, "retries": attempt, "thread_id": f"{case_id}-retry{attempt}",
+            "timeline": [], "report": None, "pattern": None, "verification": None, "usage": None,
+            "duration_s": 0, "updated_at": now()})
+        if background:
+            threading.Thread(target=self.investigate, args=(case_id,), daemon=True).start()
+        else:
+            self.investigate(case_id)
+        return self.repo.get("cases", case_id)
 
     def decide(self, case_id: str, action: str, note: str | None = None, background: bool = True) -> dict:
         case = self.repo.get("cases", case_id)
@@ -222,7 +271,7 @@ class CaseService:
             raise ValueError(f"case is {case['status']}, not awaiting review")
         decision = {"action": action, "note": note, "at": now()}
         graph = self.graph(case.get("mode", "multi"))
-        snap = graph.get_state({"configurable": {"thread_id": case_id}})
+        snap = graph.get_state({"configurable": {"thread_id": case.get("thread_id") or case_id}})
         if snap.next:  # normal path: resume the paused LangGraph run
             if background:
                 self.repo.update("cases", case_id, {"status": "investigating" if action == "reinvestigate" else "closing"})
@@ -238,4 +287,5 @@ class CaseService:
                 agree = action == "approve"
                 status = "confirmed_suspicious" if (verdict == "suspicious") == agree else "closed_not_suspicious"
                 self.repo.update("cases", case_id, {"status": status, "decision": decision, "updated_at": now()})
+                self.memory.remember(self.repo.get("cases", case_id))
         return self.repo.get("cases", case_id)

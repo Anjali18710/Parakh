@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { api, errorMessage, type CaseDetail, type CaseSummary } from './api'
 import { STATUS_LABELS, isWorking, patternName } from './format'
+import { CountUp } from './motion'
 
 type Filter = 'review' | 'all'
 
@@ -48,7 +49,7 @@ export function Queue({ cases, selected, onSelect, onOpened }: Props) {
       <ul>
         {shown.map((c) => (
           <li key={c._id}>
-            <button className={`case-row ${c._id === selected ? 'current' : ''}`} onClick={() => onSelect(c._id)}>
+            <button className={`case-row ${c._id === selected ? 'current' : ''} ${isWorking(c.status) ? 'working' : ''}`} onClick={() => onSelect(c._id)}>
               <span className={`streak ${c.verdict ?? 'pending'}`} aria-hidden="true" />
               <span className="acct">{c.account}</span>
               <span className={`status s-${c.status}`}>
@@ -60,7 +61,7 @@ export function Queue({ cases, selected, onSelect, onOpened }: Props) {
                   ? `${c.verdict === 'suspicious' ? 'Suspicious' : 'Looks innocent'}${c.pattern_id && c.pattern_id !== 'none' ? `, ${patternName(c.pattern_id)}` : ''}`
                   : `Rule score ${c.alert_score ?? '–'}`}
               </span>
-              {c.risk_score != null && <span className="risk">{c.risk_score}</span>}
+              {c.risk_score != null && <span className={`risk ${c.verdict ?? ''}`}><CountUp value={c.risk_score} /></span>}
             </button>
           </li>
         ))}

@@ -40,6 +40,8 @@ class Settings:
     data_path: str = field(default_factory=lambda: os.getenv("DATA_PATH", str(DEFAULT_DATA_PATH)))
     mongodb_uri: str | None = field(default_factory=lambda: os.getenv("MONGODB_URI") or None)
     mongodb_db: str = field(default_factory=lambda: os.getenv("MONGODB_DB", "parakh"))
+    # Name printed on suspicious transaction reports
+    reporting_entity: str = field(default_factory=lambda: os.getenv("REPORTING_ENTITY", "Demo Bank Ltd (synthetic data)"))
 
     # API
     cors_origins: list[str] = field(

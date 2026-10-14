@@ -13,13 +13,14 @@ from datetime import timedelta
 import networkx as nx
 import pandas as pd
 
+from parakh.data.remarks import safe_remark
 from parakh.data.store import TransactionStore
 
 MAX_ROWS = 20
 
 
 def _fmt_txn(row) -> dict:
-    return {
+    out = {
         "txn_id": row.txn_id,
         "time": pd.Timestamp(row.timestamp).strftime("%Y-%m-%d %H:%M"),
         "from": row.from_account,
@@ -27,6 +28,10 @@ def _fmt_txn(row) -> dict:
         "amount": round(float(row.amount), 2),
         "format": row.payment_format,
     }
+    remark = safe_remark(getattr(row, "remarks", ""))
+    if remark:
+        out["remark"] = remark  # customer-typed text; instruction-like remarks are withheld
+    return out
 
 
 class InvestigationTools:

@@ -2,6 +2,9 @@ import axios from 'axios'
 
 const baseURL = (import.meta.env.VITE_API_URL as string | undefined)?.replace(/\/$/, '') ?? 'http://localhost:8000'
 
+/** Absolute URL of an API path, for links the browser opens itself (downloads). */
+export const fileURL = (path: string) => `${baseURL}/api${path}`
+
 export const api = axios.create({ baseURL: `${baseURL}/api`, timeout: 30000 })
 
 export type CaseStatus =
@@ -129,6 +132,17 @@ export interface TimelineEvent {
   detail: unknown
 }
 
+export interface Precedent {
+  case_id: string
+  account: string
+  agents_verdict: string
+  agents_pattern: string
+  final_verdict: string
+  overruled: boolean
+  note: string
+  similarity: number
+}
+
 export interface CaseDetail extends Omit<CaseSummary, 'verdict' | 'risk_score' | 'pattern_id' | 'claims_verified' | 'claims_total' | 'alert_score'> {
   alert: { account: string; score: number; signals: Signal[] }
   triage: { reason: string; priority: number } | null
@@ -142,6 +156,7 @@ export interface CaseDetail extends Omit<CaseSummary, 'verdict' | 'risk_score' |
     shape?: Record<string, unknown>
     source?: 'agent' | 'rules'
     excluded_by_shape?: string[]
+    precedents?: Precedent[]
   } | null
   verification: Verification | null
   timeline: TimelineEvent[]
@@ -150,6 +165,7 @@ export interface CaseDetail extends Omit<CaseSummary, 'verdict' | 'risk_score' |
   decision: { action: string; note: string | null; at: string } | null
   analyst_notes: string[]
   usage: { llm_calls: number; input_tokens: number; output_tokens: number; est_cost_usd: number } | null
+  injections?: { txn_id: string; from: string; to: string; amount: number; remark: string; reasons: string[] }[]
 }
 
 export interface Txn {
@@ -159,6 +175,8 @@ export interface Txn {
   to_account: string
   amount: number
   payment_format: string
+  remarks?: string
+  remark_flagged?: boolean
 }
 
 export interface Run {

@@ -12,13 +12,15 @@ from collections import Counter
 from contextlib import asynccontextmanager
 from typing import Literal
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
 from parakh.agents.service import CaseService
 from parakh.config import settings
+from parakh.data.remarks import injection_reasons
 from parakh.eval.run_eval import PUBLISHED_DIR
+from parakh.reports.str_pdf import build_str, filename as str_filename
 from parakh.tools.flow import case_flow
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -52,6 +54,10 @@ def create_app(service: CaseService | None = None, require_llm_key: bool = True)
     async def lifespan(_: FastAPI):
         # Loading data and running screening takes a few seconds; do it before the first request needs it.
         threading.Thread(target=lambda: svc.alerts, daemon=True).start()
+        try:
+            logging.getLogger("parakh").info("recovered after restart: %s", svc.recover())
+        except Exception:  # never block startup on recovery
+            logging.getLogger("parakh").exception("recovery after restart failed")
         yield
 
     app = FastAPI(title="Parakh", description="Agentic anti-money-laundering investigations", version="1.0.0",
@@ -157,7 +163,8 @@ def create_app(service: CaseService | None = None, require_llm_key: bool = True)
             ids += claim.get("txn_ids", [])
         rows = svc.store.get_txns(list(dict.fromkeys(ids)))
         return [{"txn_id": r.txn_id, "timestamp": str(r.timestamp), "from_account": r.from_account,
-                 "to_account": r.to_account, "amount": float(r.amount), "payment_format": r.payment_format}
+                 "to_account": r.to_account, "amount": float(r.amount), "payment_format": r.payment_format,
+                 "remarks": r.remarks, "remark_flagged": bool(injection_reasons(r.remarks))}
                 for r in rows.sort_values("timestamp").itertuples()]
 
     @app.get("/api/cases/{case_id}/flow")
@@ -167,6 +174,25 @@ def create_app(service: CaseService | None = None, require_llm_key: bool = True)
             raise HTTPException(404, "Case not found")
         ids = [t for c in (case.get("report") or {}).get("claims", []) for t in c.get("txn_ids", [])]
         return case_flow(svc.store, case["account"], ids)
+
+    @app.get("/api/cases/{case_id}/str.pdf")
+    def suspicious_transaction_report(case_id: str):
+        """FIU-IND style STR for the case: a watermarked draft until an analyst confirms it."""
+        case = svc.repo.get("cases", case_id)
+        if not case:
+            raise HTTPException(404, "Case not found")
+        verdict = (case.get("report") or {}).get("verdict")
+        if case["status"] != "confirmed_suspicious" and not (case["status"] == "awaiting_review" and verdict == "suspicious"):
+            raise HTTPException(409, "An STR is only prepared for a case the agents or an analyst found suspicious.")
+        pdf = build_str(case, svc.store, settings.reporting_entity)
+        return Response(pdf, media_type="application/pdf",
+                        headers={"Content-Disposition": f'attachment; filename="{str_filename(case)}"'})
+
+    @app.get("/api/precedents")
+    def precedents():
+        """Analyst decisions the agents learn from."""
+        keep = ("_id", "account", "agents_verdict", "agents_pattern", "final_verdict", "overruled", "note", "created_at")
+        return [{k: d.get(k) for k in keep} for d in svc.repo.list("precedents", 500)]
 
     @app.get("/api/evaluations")
     def evaluations():
@@ -179,6 +205,16 @@ def create_app(service: CaseService | None = None, require_llm_key: bool = True)
                 continue
         out.sort(key=lambda e: e.get("updated_at", ""), reverse=True)
         return out
+
+    @app.post("/api/cases/{case_id}/retry")
+    def retry(case_id: str):
+        need_llm()
+        try:
+            return svc.retry(case_id)
+        except KeyError:
+            raise HTTPException(404, "Case not found")
+        except ValueError as exc:
+            raise HTTPException(409, str(exc))
 
     @app.post("/api/cases/{case_id}/decision")
     def decide(case_id: str, req: DecisionRequest):
