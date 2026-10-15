@@ -535,3 +535,8 @@ textarea, input, select { background: var(--surface); }
   :root:not([data-theme='light']) .flow .band.t-other path { opacity: 0.85; }
 }
 @media (max-width: 760px) { .brand { flex-wrap: wrap; } }
+
+/* A clearance a past decision may have swayed */
+.case-body > section.precedent-warning { border: 1px solid var(--warn-line); background: var(--warn-bg); border-radius: 10px; padding: 16px 18px; margin-top: 16px; }
+.precedent-warning h3 { color: var(--warn-ink); }
+.precedent-warning p { max-width: 75ch; }

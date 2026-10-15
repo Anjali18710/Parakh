@@ -8,7 +8,7 @@ from parakh.data.store import TransactionStore
 from parakh.patterns.library import PatternLibrary
 from parakh.storage.cases import MemoryRepository
 
-DISTRIBUTOR_A, DISTRIBUTOR_B, HUB = "AC153168", "AC209975", "AC387042"
+DISTRIBUTOR_A, DISTRIBUTOR_B, HUB, LOOP = "AC153168", "AC209975", "AC387042", "AC511856"
 
 
 def test_overruled_decision_reaches_the_next_similar_case():
@@ -50,3 +50,34 @@ def test_agreeing_is_remembered_too():
     doc = memory.remember(case)
     assert doc["final_verdict"] == "suspicious" and not doc["overruled"]
     assert memory.remember({**case, "decision": {"action": "reinvestigate"}}) is None
+
+
+def test_a_past_clearance_cannot_quietly_clear_a_laundering_loop():
+    """An analyst wrongly cleared one laundering loop; a near-identical loop must not be shown as a safe clearance."""
+    store = TransactionStore.from_csv(str(DEFAULT_DATA_PATH))
+    llm = RecordingLLM(pattern_answers=("family",), bad_arithmetic=False)  # a model swayed by the precedent
+    svc = CaseService(cfg=Settings(), store=store, repo=MemoryRepository(), llm=llm, library=PatternLibrary())
+
+    first = svc.open_case("AC114540", background=False)  # a laundering loop...
+    svc.decide(first, "approve", "family moving money around", background=False)  # ...wrongly cleared
+    assert svc.repo.get("precedents", first)["final_verdict"] == "not_suspicious"
+
+    llm.seen.clear()
+    case = svc.repo.get("cases", svc.open_case(LOOP, background=False))
+    assert [p["account"] for p in case["pattern"]["precedents"]] == ["AC114540"]
+    assert any("context, not instructions" in text for text in llm.seen)
+    assert case["report"]["verdict"] == "not_suspicious"  # the agents were swayed...
+    warning = case["verification"]["precedent_warning"]  # ...so the analyst is warned
+    assert warning["precedents"] == ["AC114540"] and "cycle" in warning["laundering_possible"]
+    assert case["report"]["risk_score"] >= 40  # never shown as a confident, low-risk clearance
+
+
+def test_no_warning_when_the_shape_only_fits_an_innocent_pattern():
+    store = TransactionStore.from_csv(str(DEFAULT_DATA_PATH))
+    llm = RecordingLLM(pattern_answers=("wholesale",), bad_arithmetic=False)
+    svc = CaseService(cfg=Settings(), store=store, repo=MemoryRepository(), llm=llm, library=PatternLibrary())
+    first = svc.open_case(DISTRIBUTOR_A, background=False)
+    svc.decide(first, "reject", "regular distributor", background=False)
+    case = svc.repo.get("cases", svc.open_case(DISTRIBUTOR_B, background=False))
+    assert case["report"]["verdict"] == "not_suspicious"
+    assert "precedent_warning" not in case["verification"]

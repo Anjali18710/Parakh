@@ -99,6 +99,7 @@ export interface Verification {
   check_results?: { index: number; ok: boolean; problems: string[] }[]
   removed_claims?: Claim[]
   corrected_claims?: string[]
+  precedent_warning?: { precedents: string[]; laundering_possible: string[]; message: string }
 }
 
 export interface FlowParty {

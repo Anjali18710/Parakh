@@ -33,6 +33,7 @@ from parakh.data.remarks import safe_remark
 from parakh.data.store import TransactionStore
 from parakh.fmt import inr
 from parakh.patterns.library import PatternLibrary
+from parakh.agents.memory import CAUTIOUS_RISK, precedent_warning
 from parakh.agents.memory import describe as describe_precedents
 from parakh.agents.rules import correct_claim, fill_claim, fill_summary, pattern_conflict, shape_facts, structural_candidates
 from parakh.tools.investigation import InvestigationTools
@@ -360,8 +361,16 @@ def build_case_graph(deps: Deps, mode: Mode = "multi", human_review: bool = True
                 "all remaining claims verified" if result["passed"] else f"{len(result['issues'])} problem(s) remain")
         else:
             msg = "all claims verified" if result["passed"] else f"{len(result['issues'])} problem(s) found"
-        update.update({"verification": result,
-                       "timeline": [_emit(config, _event("verifier", msg, result["issues"][:5]))]})
+        events = [_emit(config, _event("verifier", msg, result["issues"][:5]))]
+        final = update.get("report", report)
+        warning = precedent_warning(final, pattern, lambda pid: (deps.library.get(pid) or {}).get("kind"))
+        if warning:
+            # Past decisions may make the agents more careful, never less: no confident clearance.
+            result["precedent_warning"] = warning
+            update["report"] = {**final, "risk_score": max(int(final.get("risk_score", 0)), CAUTIOUS_RISK)}
+            events.append(_emit(config, _event("verifier", "flagged a clearance a past decision may have swayed",
+                                               warning["message"])))
+        update.update({"verification": result, "timeline": events})
         return update
 
     def after_verify(state: CaseState) -> str:

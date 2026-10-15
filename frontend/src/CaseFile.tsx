@@ -352,6 +352,18 @@ export function CaseFile({ caseId, onChanged }: { caseId: string; onChanged: () 
 
         {r && (
           <>
+            {v?.precedent_warning && (
+              <section className="precedent-warning" role="alert">
+                <h3>Check this clearance</h3>
+                <p>
+                  The agents cleared this account while a past decision on a similar account (
+                  {v.precedent_warning.precedents.join(', ')}) was in front of them, and its money flow also fits{' '}
+                  {v.precedent_warning.laundering_possible.map((p) => patternName(p).toLowerCase()).join(' or ')}. A
+                  look-alike can still be laundering, so judge it on its own transactions before closing.
+                </p>
+              </section>
+            )}
+
             <section>
               <h3>Findings</h3>
               <p className="summary">{r.summary}</p>
