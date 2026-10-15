@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import { api, errorMessage, type CaseSummary, type Health, type Run, type Stats } from './api'
 import { count } from './format'
+import { Overview } from './Overview'
 import { Queue } from './Queue'
 import { CountUp } from './motion'
 import { ThemeToggle } from './theme'
@@ -51,10 +52,6 @@ export default function App() {
     return () => window.clearInterval(id)
   }, [run])
 
-  useEffect(() => {
-    if (!selected && cases.length) setSelected(cases[0]._id)
-  }, [cases, selected])
-
   async function startRun() {
     setStarting(true)
     try {
@@ -86,10 +83,10 @@ export default function App() {
             <path d="M8 23 L24 9" />
             <path d="M10 25 L20 16" className="faint" />
           </svg>
-          <div>
+          <button className="home" onClick={() => setSelected(null)} aria-label="Parakh overview">
             <h1>Parakh</h1>
             <p>AI agents that investigate suspicious accounts</p>
-          </div>
+          </button>
           <ThemeToggle />
         </div>
 
@@ -153,13 +150,7 @@ export default function App() {
         {selected ? (
           <CaseFile key={selected} caseId={selected} onChanged={refresh} />
         ) : (
-          <section className="casefile empty">
-            <h2>No cases yet</h2>
-            <p>
-              Screening rules have flagged {stats ? count(stats.alerts) : 'some'} accounts. Start an investigation and the
-              triage agent will pick the alerts most worth a closer look.
-            </p>
-          </section>
+          <Overview stats={stats} cases={cases} onOpen={(id) => { setSelected(id); refresh() }} />
         )}
       </main>
     </div>
