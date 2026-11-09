@@ -110,9 +110,32 @@ def _matches_amount(value: float, amounts: list[float], tol: float = 1.0, extra:
     return any(abs(value - c) <= tol for c in _candidates(amounts) + list(extra))
 
 
+def tool_findings(tool: str, result: object) -> list[str]:
+    """What a search tool actually found, in a few words each: loops for find_cycles, shared
+    destinations for common_counterparties. Empty means it found nothing. Other tools: always empty."""
+    if not isinstance(result, dict):
+        return []
+    if tool == "find_cycles":
+        return [" → ".join(c.get("accounts", [])) + f" (over {c.get('span_days')} days)"
+                for c in result.get("cycles") or []]
+    if tool == "common_counterparties":
+        return [f"{acc} (reached via {info.get('reached_via')} accounts)"
+                for acc, info in (result.get("shared_accounts") or {}).items()]
+    return []
+
+
+def _contradicting_findings(tool: str | None, evidence: list[dict] | None) -> list[str]:
+    """What the named tool found in this case, if anything. A "nothing found" check about it is then false."""
+    found: list[str] = []
+    for e in evidence or []:
+        if e.get("tool") == tool:
+            found += [f for f in e.get("found") or [] if f not in found]
+    return found
+
+
 def verify_report(report: dict, store: TransactionStore, case_account: str,
                   tools_used: set[str] | None = None, trusted_amounts: list[float] | None = None,
-                  pattern_kind: str | None = None) -> dict:
+                  pattern_kind: str | None = None, evidence: list[dict] | None = None) -> dict:
     """Check every cited claim against the ledger, and every 'nothing found' check against the tools actually run."""
     claim_results, issues = [], []
     cited_accounts: set[str] = set()
@@ -178,14 +201,19 @@ def verify_report(report: dict, store: TransactionStore, case_account: str,
             issues.append(f"summary: amount ₹{inr_plain(value)} is not supported by any cited transactions")
 
     # Negative findings ("no loops found") cannot cite transactions. They are valid only if the
-    # investigator really ran the tool that would have found something.
+    # investigator really ran the tool that would have found something, and that tool found nothing.
     check_results = []
     for i, check in enumerate(report.get("checks", [])):
-        ok = tools_used is None or check.get("tool") in tools_used
-        check_results.append({"index": i, "ok": ok,
-                              "problems": [] if ok else [f"tool '{check.get('tool')}' was never run in this case"]})
-        if not ok:
-            issues.append(f"check {i + 1}: tool '{check.get('tool')}' was never run in this case")
+        problems = []
+        if tools_used is not None and check.get("tool") not in tools_used:
+            problems.append(f"tool '{check.get('tool')}' was never run in this case")
+        else:
+            found = _contradicting_findings(check.get("tool"), evidence)
+            if found:
+                problems.append(f"'{check.get('tool')}' found something: " + "; ".join(found[:3]))
+        check_results.append({"index": i, "ok": not problems, "problems": problems})
+        if problems:
+            issues.append(f"check {i + 1}: " + "; ".join(problems))
 
     return {
         "passed": not issues,

@@ -292,7 +292,9 @@ export function CaseFile({ caseId, onChanged }: { caseId: string; onChanged: () 
 
       {c.status === 'failed' && (
         <div className="banner bad failed">
-          <span>{c.error?.includes('restart') ? c.error : `The agents stopped with an error: ${c.error}`}</span>
+          <span>
+            {c.error_kind === 'rate_limit' || c.error?.includes('restart') ? c.error : `The agents stopped with an error: ${c.error}`}
+          </span>
           <button onClick={retry} disabled={busy}>Retry investigation</button>
         </div>
       )}
@@ -407,12 +409,17 @@ export function CaseFile({ caseId, onChanged }: { caseId: string; onChanged: () 
                   )
                 })}
               </ol>
-              {(v?.removed_claims?.length ?? 0) > 0 && (
+              {((v?.removed_claims?.length ?? 0) > 0 || (v?.removed_checks?.length ?? 0) > 0) && (
                 <>
                   <h4>Removed by the fact-checker</h4>
                   <ul className="removed">
-                    {v!.removed_claims!.map((cl, i) => (
-                      <li key={i}>{cl.statement}</li>
+                    {(v?.removed_claims ?? []).map((cl, i) => (
+                      <li key={`c${i}`}>{cl.statement}</li>
+                    ))}
+                    {(v?.removed_checks ?? []).map((ch, i) => (
+                      <li key={`k${i}`}>
+                        {ch.description} <small>contradicted by what the tool found</small>
+                      </li>
                     ))}
                   </ul>
                 </>

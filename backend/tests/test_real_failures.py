@@ -114,3 +114,21 @@ def test_invented_placeholders_are_filled_or_rejected(demo):
     assert not result["claim_results"][1]["ok"] and "placeholder" in result["claim_results"][1]["problems"][0]
     # Summaries come out in Indian grouping with readable pattern names.
     assert fill_summary("received ₹6,869,564, a gather_scatter hub", {}) == "received ₹68,69,564, a gather-scatter hub"
+
+
+def test_nothing_found_must_agree_with_what_the_tool_found(demo):
+    """Seen in testing: a loop account's report said "No loops found" and the fact-checker accepted it,
+    because it only checked that find_cycles had been run, not what it returned."""
+    case = run(demo, LOOP, MisbehavingLLM(pattern_answers=("cycle",), bad_arithmetic=False))
+    loops_run = [e for e in case["evidence"] if e["tool"] == "find_cycles"]
+    assert loops_run and any(e["found"] for e in loops_run)  # the tool did find the loop
+    assert all(c["description"] != "No loops found." for c in case["report"].get("checks", []))
+    removed = case["verification"]["removed_checks"]
+    assert [c["description"] for c in removed] == ["No loops found."]
+
+
+def test_nothing_found_stays_when_the_tool_really_found_nothing(demo):
+    case = run(demo, HUB, MisbehavingLLM(pattern_answers=("gather_scatter",), bad_arithmetic=False))
+    assert not any(e["found"] for e in case["evidence"] if e["tool"] == "find_cycles")
+    assert any(c["description"] == "No loops found." for c in case["report"]["checks"])
+    assert all(r["ok"] for r in case["verification"]["check_results"])

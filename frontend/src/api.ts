@@ -55,6 +55,7 @@ export interface CaseSummary {
   alert_score: number | null
   duration_s: number | null
   error: string | null
+  error_kind?: 'rate_limit' | 'error' | null
 }
 
 export interface Signal {
@@ -98,6 +99,7 @@ export interface Verification {
   checks_verified?: number
   check_results?: { index: number; ok: boolean; problems: string[] }[]
   removed_claims?: Claim[]
+  removed_checks?: Check[]
   corrected_claims?: string[]
   precedent_warning?: { precedents: string[]; laundering_possible: string[]; message: string }
 }

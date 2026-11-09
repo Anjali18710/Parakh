@@ -88,7 +88,8 @@ Problems found:
 
 Return the corrected report. Keep every claim that had no problem exactly as it was. Fix or delete only the
 failing ones. Use {{total}} and {{count}} instead of writing numbers. Anything that was not found belongs in
-`checks`, not `claims`."""
+`checks`, not `claims`. If a check failed because its tool did find something, that finding is evidence: report it
+as a claim citing its transactions, and remove the check."""
 
 SINGLE_AGENT = """You are an anti-money-laundering analyst investigating account {account}.
 

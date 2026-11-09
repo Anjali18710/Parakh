@@ -13,7 +13,7 @@ from langgraph.types import Command
 
 from parakh.agents.graph import Deps, build_case_graph
 from parakh.agents.memory import CaseMemory
-from parakh.agents.llm import UsageTracker, get_llm
+from parakh.agents.llm import UsageTracker, friendly_error, get_llm
 from parakh.agents.triage import brief, triage_by_score, triage_with_llm
 from parakh.config import Settings, settings as default_settings
 from parakh.data.store import TransactionStore
@@ -151,7 +151,8 @@ class CaseService:
             self.repo.update("runs", run_id, {"status": "done", "finished_at": now()})
         except Exception as exc:  # surface failures in the UI instead of dying silently
             log.exception("run %s failed", run_id)
-            self.repo.update("runs", run_id, {"status": "failed", "error": f"{type(exc).__name__}: {exc}"})
+            kind, message = friendly_error(exc)
+            self.repo.update("runs", run_id, {"status": "failed", "error": message, "error_kind": kind})
 
     # ------------------------------------------------------------ cases
     def create_case(self, account: str, mode: str = "multi", triage: dict | None = None,
@@ -219,7 +220,8 @@ class CaseService:
                 self.memory.remember(self.repo.get("cases", case_id))
         except Exception as exc:
             log.exception("case %s failed", case_id)
-            self.repo.update("cases", case_id, {"status": "failed", "error": f"{type(exc).__name__}: {exc}",
+            kind, message = friendly_error(exc)
+            self.repo.update("cases", case_id, {"status": "failed", "error": message, "error_kind": kind,
                                                 "updated_at": now()})
 
     # ------------------------------------------------------------ restarts
@@ -253,7 +255,7 @@ class CaseService:
             raise ValueError(f"case is {case['status']}; only failed cases can be retried")
         attempt = int(case.get("retries", 0)) + 1
         self.repo.update("cases", case_id, {
-            "status": "queued", "error": None, "retries": attempt, "thread_id": f"{case_id}-retry{attempt}",
+            "status": "queued", "error": None, "error_kind": None, "retries": attempt, "thread_id": f"{case_id}-retry{attempt}",
             "timeline": [], "report": None, "pattern": None, "verification": None, "usage": None,
             "duration_s": 0, "updated_at": now()})
         if background:

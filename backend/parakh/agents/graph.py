@@ -27,7 +27,7 @@ from langgraph.types import interrupt
 
 from parakh.agents import prompts
 from parakh.agents.schemas import CaseReport, PatternFinding
-from parakh.agents.verifier import verify_report
+from parakh.agents.verifier import tool_findings, verify_report
 from parakh.config import Settings
 from parakh.data.remarks import safe_remark
 from parakh.data.store import TransactionStore
@@ -139,7 +139,9 @@ def run_tool_loop(llm, tools: list[StructuredTool], system: str, user: str, budg
                 result = {"error": f"{type(exc).__name__}: {exc}"}
             text = json.dumps(result, default=str, separators=(",", ":"), ensure_ascii=False)[:TOOL_RESULT_CHARS]
             msgs.append(ToolMessage(text, tool_call_id=call["id"]))
-            evidence.append({"tool": call["name"], "args": call["args"], "result": text})
+            # `found` is kept in full (the text above may be cut short) so "nothing found" can be checked against it.
+            evidence.append({"tool": call["name"], "args": call["args"], "result": text,
+                             "found": tool_findings(call["name"], result)})
             events.append(_emit(config, _event(agent_name, f"called {call['name']}", call["args"])))
         if calls >= budget:
             msgs.append(HumanMessage("Your tool budget is used up. Write your evidence summary now."))
@@ -326,7 +328,8 @@ def build_case_graph(deps: Deps, mode: Mode = "multi", human_review: bool = True
         shape = pattern.get("shape", {})
         trusted = [shape.get("total_in", 0), shape.get("total_out", 0)]
         report = state["report"]
-        result = verify_report(report, deps.store, state["account"], tools_used, trusted_amounts=trusted,
+        result = verify_report(report, deps.store, state["account"], tools_used, evidence=state.get("evidence", []),
+                               trusted_amounts=trusted,
                                pattern_kind=pattern.get("kind"))
         result["enforced"] = enforce_verifier
         update: dict = {}
@@ -347,9 +350,11 @@ def build_case_graph(deps: Deps, mode: Mode = "multi", human_review: bool = True
                     removed.append(claim)
             cleaned = {**report, "claims": kept,
                        "checks": [c for i, c in enumerate(report.get("checks", [])) if i not in bad_checks]}
-            result = verify_report(cleaned, deps.store, state["account"], tools_used, trusted_amounts=trusted,
+            result = verify_report(cleaned, deps.store, state["account"], tools_used,
+                                   evidence=state.get("evidence", []), trusted_amounts=trusted,
                                    pattern_kind=pattern.get("kind"))
             result.update({"enforced": True, "removed_claims": removed,
+                           "removed_checks": [c for i, c in enumerate(report.get("checks", [])) if i in bad_checks],
                            "corrected_claims": [c["statement"] for c in corrected]})
             update["report"] = cleaned
             parts = []
@@ -357,6 +362,8 @@ def build_case_graph(deps: Deps, mode: Mode = "multi", human_review: bool = True
                 parts.append(f"corrected {len(corrected)} miscalculated total(s)")
             if removed:
                 parts.append(f"removed {len(removed)} unsupported claim(s)")
+            if bad_checks:
+                parts.append(f"removed {len(bad_checks)} 'nothing found' check(s) the tools contradict")
             msg = ", ".join(parts) + "; " + (
                 "all remaining claims verified" if result["passed"] else f"{len(result['issues'])} problem(s) remain")
         else:

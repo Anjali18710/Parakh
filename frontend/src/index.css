@@ -579,3 +579,4 @@ textarea, input, select { background: var(--surface); }
   .figures-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .steps { grid-template-columns: 1fr; }
 }
+.removed li small { display: inline-block; text-decoration: none; margin-left: 6px; color: var(--flag); }
