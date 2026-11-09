@@ -8,7 +8,7 @@ from fakes import MisbehavingLLM
 
 from parakh.agents.graph import Deps, build_case_graph
 from parakh.agents.service import load_or_screen
-from parakh.config import DEFAULT_DATA_PATH, Settings
+from parakh.config import DEMO_DATA_PATH, Settings
 from parakh.data.store import TransactionStore
 from parakh.patterns.library import PatternLibrary
 from parakh.tools.investigation import InvestigationTools
@@ -18,8 +18,8 @@ HUB, DISTRIBUTOR, LOOP = "AC387042", "AC153168", "AC511856"
 
 @pytest.fixture(scope="module")
 def demo():
-    store = TransactionStore.from_csv(str(DEFAULT_DATA_PATH))
-    alerts = {a["account"]: a for a in load_or_screen(store, str(DEFAULT_DATA_PATH))}
+    store = TransactionStore.from_csv(str(DEMO_DATA_PATH))
+    alerts = {a["account"]: a for a in load_or_screen(store, str(DEMO_DATA_PATH))}
     return store, InvestigationTools(store), PatternLibrary(), alerts
 
 

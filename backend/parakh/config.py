@@ -8,7 +8,10 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 BACKEND_DIR = Path(__file__).resolve().parent.parent
-DEFAULT_DATA_PATH = BACKEND_DIR / "data" / "demo_transactions.csv.gz"
+# The app runs on a slice of IBM's public AML dataset (see parakh/data/ibm_loader.py).
+DEFAULT_DATA_PATH = BACKEND_DIR / "data" / "ibm_transactions.csv.gz"
+# The tests use Parakh's own synthetic data, whose accounts they name (for example the hub AC387042).
+DEMO_DATA_PATH = BACKEND_DIR / "data" / "demo_transactions.csv.gz"
 load_dotenv(BACKEND_DIR / ".env")
 
 

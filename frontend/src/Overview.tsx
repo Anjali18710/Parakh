@@ -3,7 +3,7 @@ import { api, errorMessage, type CaseDetail, type CaseSummary, type Stats } from
 import { count } from './format'
 import { CountUp } from './motion'
 
-const SAMPLE_ACCOUNT = 'AC387042' // a gather-scatter hub from the demo data
+const SAMPLE_ACCOUNT = 'AC890758' // part of a round-trip loop in IBM's data, with a planted injection attempt
 
 const STEPS = [
   ['Investigator', 'Follows the money with five tools, within a fixed budget of calls.'],

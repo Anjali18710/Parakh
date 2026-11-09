@@ -3,7 +3,7 @@ from fakes import RecordingLLM
 from mongo_shim import MongoClient
 
 from parakh.agents.service import CaseService
-from parakh.config import DEFAULT_DATA_PATH, Settings
+from parakh.config import DEMO_DATA_PATH, Settings
 from parakh.data.store import TransactionStore
 from parakh.patterns.library import PatternLibrary
 from parakh.storage.cases import MongoRepository
@@ -18,7 +18,7 @@ def service(client, store):
 
 
 def test_paused_case_and_interrupted_case_after_restart():
-    client, store = MongoClient(), TransactionStore.from_csv(str(DEFAULT_DATA_PATH))
+    client, store = MongoClient(), TransactionStore.from_csv(str(DEMO_DATA_PATH))
     before = service(client, store)
     paused = before.open_case(HUB, background=False)
     assert before.repo.get("cases", paused)["status"] == "awaiting_review"

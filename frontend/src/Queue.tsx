@@ -73,7 +73,7 @@ export function Queue({ cases, selected, onSelect, onOpened }: Props) {
       <form className="open-case" onSubmit={openCase}>
         <label htmlFor="acct">Investigate a specific account</label>
         <div>
-          <input id="acct" placeholder="e.g. AC387042" value={account} onChange={(e) => setAccount(e.target.value)} />
+          <input id="acct" placeholder="e.g. AC890758" value={account} onChange={(e) => setAccount(e.target.value)} />
           <button type="submit">Open case</button>
         </div>
         {openError && <p className="field-error">{openError}</p>}

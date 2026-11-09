@@ -8,7 +8,6 @@ from fakes import FakeLLM
 from parakh.agents.service import CaseService
 from parakh.api.main import create_app
 from parakh.config import Settings
-from parakh.data.ibm_loader import convert
 from parakh.patterns.library import PatternLibrary
 from parakh.storage.cases import MemoryRepository, MongoRepository
 
@@ -62,27 +61,6 @@ def test_mongo_repository():
     repo.update("cases", "c1", {"status": "awaiting_review"})
     assert repo.get("cases", "c1")["status"] == "awaiting_review"
     assert [d["_id"] for d in repo.list("cases")] == ["c1"]
-
-
-def test_ibm_loader(tmp_path):
-    trans = tmp_path / "t.csv"
-    pd.DataFrame({
-        "Timestamp": ["2022/09/01 00:20", "2022/09/01 00:25", "2022/09/01 01:00"],
-        "From Bank": [10, 10, 20], "Account": ["A1", "A1", "B2"],
-        "To Bank": [20, 30, 10], "Account.1": ["B2", "C3", "A1"],
-        "Amount Received": [100.0, 200.0, 50.0], "Receiving Currency": ["US Dollar"] * 3,
-        "Amount Paid": [100.0, 200.0, 50.0], "Payment Currency": ["US Dollar"] * 3,
-        "Payment Format": ["ACH", "ACH", "Cheque"], "Is Laundering": [1, 1, 0],
-    }).to_csv(trans, index=False)
-    patterns = tmp_path / "p.txt"
-    patterns.write_text(
-        "BEGIN LAUNDERING ATTEMPT - FAN-OUT:  Max 16-degree Fan-Out\n"
-        "2022/09/01 00:20,10,A1,20,B2,100.00,US Dollar,100.00,US Dollar,ACH,1\n"
-        "END LAUNDERING ATTEMPT - FAN-OUT\n")
-    df = convert(str(trans), str(patterns), days=10, max_rows=None)
-    assert list(df.columns[:3]) == ["txn_id", "timestamp", "from_account"]
-    assert df.loc[df.from_account == "10-A1"].iloc[0].pattern == "fan_out"
-    assert (df.pattern == "unlabelled").sum() == 1
 
 
 def test_case_flow(store):

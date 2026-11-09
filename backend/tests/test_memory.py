@@ -3,7 +3,7 @@ from fakes import RecordingLLM
 
 from parakh.agents.memory import CaseMemory, shape_vector
 from parakh.agents.service import CaseService
-from parakh.config import DEFAULT_DATA_PATH, Settings
+from parakh.config import DEMO_DATA_PATH, Settings
 from parakh.data.store import TransactionStore
 from parakh.patterns.library import PatternLibrary
 from parakh.storage.cases import MemoryRepository
@@ -12,7 +12,7 @@ DISTRIBUTOR_A, DISTRIBUTOR_B, HUB, LOOP = "AC153168", "AC209975", "AC387042", "A
 
 
 def test_overruled_decision_reaches_the_next_similar_case():
-    store = TransactionStore.from_csv(str(DEFAULT_DATA_PATH))
+    store = TransactionStore.from_csv(str(DEMO_DATA_PATH))
     llm = RecordingLLM(pattern_answers=("wholesale",), bad_arithmetic=False)
     svc = CaseService(cfg=Settings(), store=store, repo=MemoryRepository(), llm=llm, library=PatternLibrary())
 
@@ -54,7 +54,7 @@ def test_agreeing_is_remembered_too():
 
 def test_a_past_clearance_cannot_quietly_clear_a_laundering_loop():
     """An analyst wrongly cleared one laundering loop; a near-identical loop must not be shown as a safe clearance."""
-    store = TransactionStore.from_csv(str(DEFAULT_DATA_PATH))
+    store = TransactionStore.from_csv(str(DEMO_DATA_PATH))
     llm = RecordingLLM(pattern_answers=("family",), bad_arithmetic=False)  # a model swayed by the precedent
     svc = CaseService(cfg=Settings(), store=store, repo=MemoryRepository(), llm=llm, library=PatternLibrary())
 
@@ -73,7 +73,7 @@ def test_a_past_clearance_cannot_quietly_clear_a_laundering_loop():
 
 
 def test_no_warning_when_the_shape_only_fits_an_innocent_pattern():
-    store = TransactionStore.from_csv(str(DEFAULT_DATA_PATH))
+    store = TransactionStore.from_csv(str(DEMO_DATA_PATH))
     llm = RecordingLLM(pattern_answers=("wholesale",), bad_arithmetic=False)
     svc = CaseService(cfg=Settings(), store=store, repo=MemoryRepository(), llm=llm, library=PatternLibrary())
     first = svc.open_case(DISTRIBUTOR_A, background=False)
