@@ -62,6 +62,15 @@ python -m parakh.data.ibm_loader --trans HI-Small_Trans.csv --patterns HI-Small_
 python -m parakh.data.remarks data/ibm_transactions.csv.gz
 ```
 
+## Rules vs Parakh
+
+```bash
+cd backend
+python -m parakh.eval.compare
+```
+
+Takes 30 screening alerts from the IBM slice (15 on accounts IBM labels as laundering, 15 on innocent ones) and scores the screening rules alone and Parakh against IBM's labels, which neither side sees. Each case is saved as it finishes; on Groq's free tier the daily token limit stops the run after about a dozen cases, and the same command continues the next day. The result is written to `backend/results/summary.md`.
+
 The tests use Parakh's own synthetic data (`data/demo_transactions.csv.gz`, made by `parakh/data/generator.py`), because they recreate failures seen on specific accounts in it.
 
 ## Run locally
