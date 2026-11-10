@@ -44,6 +44,7 @@ flowchart LR
 | A wholesale distributor was flagged suspicious | Profiles measure repeat counterparties and payment regularity |
 | "Eight senders" written for seven | Counts are fact-checked and corrected |
 | The model invented placeholders like `{total_out}` | Known ones are filled in, unknown ones fail the fact-check |
+| On IBM's data, every innocent account in the first 12 test cases was called suspicious | Code measures whether received money was passed straight on or the account was paying its usual recipients, and "ordinary activity" is always an allowed answer |
 
 Each has a regression test in `backend/tests/test_real_failures.py`.
 
@@ -69,7 +70,7 @@ cd backend
 python -m parakh.eval.compare
 ```
 
-Takes 30 screening alerts from the IBM slice (15 on accounts IBM labels as laundering, 15 on innocent ones) and scores the screening rules alone and Parakh against IBM's labels, which neither side sees. Each case is saved as it finishes; on Groq's free tier the daily token limit stops the run after about a dozen cases, and the same command continues the next day. The result is written to `backend/results/summary.md`.
+Takes 30 screening alerts from the IBM slice (15 on accounts IBM labels as laundering, 15 on innocent ones) and scores the screening rules alone and Parakh against IBM's labels, which neither side sees. Each case is saved as it finishes; on Groq's free tier the daily token limit stops the run after about a dozen cases, and the same command continues the next day. The result is written to `backend/results/summary.md`. Changes are tried out with `--dev`, on 10 other alerts, so the 30 used for the result never shape the code.
 
 The tests use Parakh's own synthetic data (`data/demo_transactions.csv.gz`, made by `parakh/data/generator.py`), because they recreate failures seen on specific accounts in it.
 
@@ -108,6 +109,7 @@ LangGraph, LangChain, Groq (GPT-OSS 120B), FAISS, NetworkX, Pandas, FastAPI, Pyd
 ## Limitations
 
 - The data is synthetic; real bank data is messier.
+- In IBM's HI-Small data every laundering payment is an ACH transfer, a quirk of the simulator. Parakh's code and prompts never treat payment type as a sign of laundering, because that would not hold at a real bank.
 - The fact-checker verifies amounts, counts, accounts and IDs, but not timing claims ("within 3 hours").
 - The injection detector is pattern-based and can miss unusual phrasing, though a missed remark still cannot change the amounts or pattern checks done in code.
 - The STR is a draft for the bank's Principal Officer; FIU-IND accepts filings only through FINnet.

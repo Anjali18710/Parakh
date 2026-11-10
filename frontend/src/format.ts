@@ -31,6 +31,7 @@ export const PATTERN_NAMES: Record<string, string> = {
   investment: 'Investment transfer',
   property: 'Property purchase',
   family: 'Family transfers',
+  ordinary: 'Ordinary activity',
   none: 'No clear pattern',
 }
 

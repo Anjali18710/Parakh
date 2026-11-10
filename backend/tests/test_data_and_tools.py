@@ -80,3 +80,28 @@ def test_indian_rupee_format():
     assert inr(6641114) == "₹66,41,114"
     assert inr(999) == "₹999"
     assert inr(123456789) == "₹12,34,56,789"
+
+
+def test_money_movement_tells_passing_money_on_from_spending_your_own():
+    import pandas as pd
+
+    from parakh.data.store import TransactionStore
+
+    rows = [  # MULE receives ₹10 lakh and passes it on to two new accounts the next morning
+        ("T1", "2022-09-01 10:00", "SRC", "MULE", 1_000_000), ("T2", "2022-09-02 09:00", "MULE", "NEW1", 480_000),
+        ("T3", "2022-09-02 09:05", "MULE", "NEW2", 470_000),
+        # SHOP receives ₹1 lakh but pays its landlord ₹5 lakh every day: its own money, not passed on
+        ("T4", "2022-09-01 10:00", "CUST", "SHOP", 100_000),
+    ] + [(f"T{5 + d}", f"2022-09-0{1 + d} 18:00", "SHOP", "LANDLORD", 500_000) for d in range(4)]
+    df = pd.DataFrame(rows, columns=["txn_id", "timestamp", "from_account", "to_account", "amount"])
+    df["payment_format"] = "Wire"
+    tools = InvestigationTools(TransactionStore(df))
+
+    mule = tools.money_movement("MULE")
+    assert mule["matched_pass_throughs"] == 1 and mule["examples"][0]["onward"] == ["T2", "T3"]
+    assert mule["examples"][0]["onward_recipients"] == 2 and mule["one_off_recipient_share"] == 1.0
+
+    shop = tools.money_movement("SHOP")
+    assert shop["matched_pass_throughs"] == 0
+    assert shop["repeat_payment_share"] == 1.0 and shop["money_out_vs_in"] == 20.0
+    assert "money_movement" in tools.account_profile("SHOP")

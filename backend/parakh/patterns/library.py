@@ -85,6 +85,11 @@ TYPOLOGIES: list[Typology] = [
              "Family members move money between each other's accounts, which can form a loop over days or weeks.",
              "Same small group of people, amounts that differ rather than shrinking by small fees, accounts have "
              "normal everyday spending around the transfers."),
+    Typology("ordinary", "Ordinary account activity (innocent)", "innocent",
+             "Everyday payments in and out with no laundering shape: the account pays the same people again and "
+             "again, or spends money it already held, and nothing it received is passed straight on.",
+             "No matched pass-through and no loop; most payments repeat the same recipient and amount, or the "
+             "account pays out far more than it received; counterparties are not fresh one-off accounts."),
 ]
 
 

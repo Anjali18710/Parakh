@@ -22,6 +22,7 @@ def shape_facts(store: TransactionStore, itools: InvestigationTools, account: st
     flow = case_flow(store, account, cited)
     rel = (itools.account_profile(account) or {}).get("relationships", {})
     loops = itools.find_cycles(account, max_length=6, window_days=7).get("cycles", [])
+    move = itools.money_movement(account)
     return {
         "senders_in_window": flow.get("senders", 0),
         "recipients_in_window": flow.get("recipients", 0),
@@ -31,6 +32,10 @@ def shape_facts(store: TransactionStore, itools: InvestigationTools, account: st
         "activity_span_hours": flow.get("span_hours", 0),
         "in_loop_within_7_days": any(c.get("within_window") for c in loops),
         **{k: v for k, v in rel.items() if k != "note"},
+        "money_out_vs_in": move["money_out_vs_in"],
+        "repeat_payment_share": move["repeat_payment_share"],
+        "one_off_recipient_share": move["one_off_recipient_share"],
+        "matched_pass_throughs": move["matched_pass_throughs"],
     }
 
 
@@ -56,6 +61,9 @@ def pattern_conflict(pattern_id: str, shape: dict, alert: dict | None = None) ->
         "stack": [(s >= 3 and r >= 3, f"stacked layers need 3+ senders and 3+ recipients, measured {s} and {r}")],
         "scatter_gather": [(r >= 3 and s <= 2, f"scatter-gather splits one source to many, measured {s} senders and {r} recipients")],
         "layering_chain": [(s <= 2 and r <= 2, f"a layering chain passes money one-to-one, measured {s} senders and {r} recipients"),
+                           (shape.get("matched_pass_throughs", 1) > 0,
+                            "a layering chain passes received money straight on, but no inflow was followed by "
+                            "one-off payments adding up to most of it"),
                            (not loop, "money returns to this account in a loop, which is a round trip, not a chain")],
         "cycle": [(loop, "no loop of transfers back to this account was found")],
         "wholesale": [(s >= 3, f"wholesale trade has many buyers, measured {s} senders"),
@@ -80,7 +88,7 @@ def pattern_conflict(pattern_id: str, shape: dict, alert: dict | None = None) ->
 def structural_candidates(shape: dict, alert: dict) -> list[str]:
     """Typologies the measured shape makes plausible, most specific first."""
     order = ["cycle", "gather_scatter", "fan_in", "fan_out", "scatter_gather", "layering_chain",
-             "wholesale", "payroll", "investment", "property", "family", "bipartite", "stack"]
+             "wholesale", "payroll", "investment", "property", "family", "bipartite", "stack", "ordinary"]
     return [p for p in order if pattern_conflict(p, shape, alert) is None]
 
 

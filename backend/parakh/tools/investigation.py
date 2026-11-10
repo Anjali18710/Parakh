@@ -34,6 +34,12 @@ def _fmt_txn(row) -> dict:
     return out
 
 
+# An inflow counts as passed on when one-off payments within MATCH_HOURS add up to this share of it.
+# The band is wide on purpose: money can be passed on in another currency, with fees, or topped up.
+# It was set on alerts outside the 30 used for the rules-vs-Parakh comparison.
+MATCH_HOURS = 48
+MATCH_SHARE = (0.6, 1.5)
+
 class InvestigationTools:
     def __init__(self, store: TransactionStore):
         self.store = store
@@ -73,6 +79,42 @@ class InvestigationTools:
                             "vs_median_day": round(float(daily.max() / max(daily.median(), 1)), 1)},
             "payment_formats": allt.payment_format.value_counts().to_dict(),
             "relationships": self._relationships(inc, out),
+            "money_movement": self.money_movement(account),
+        }
+
+    def money_movement(self, account: str) -> dict:
+        """Is the account passing other people's money on, or paying out its own?
+
+        Laundering passes money straight on: an inflow is followed within two days by one-off payments
+        that add up to most of it. Ordinary accounts pay the same people the same amounts again and
+        again (rent, suppliers, bills), and often pay out far more than they received in this period
+        because they already held the money. Taking the time from inflow to outflow alone cannot tell
+        these apart.
+        """
+        out, inc = self.store.out_txns(account), self.store.in_txns(account)
+        total_in, total_out = float(inc.amount.sum()), float(out.amount.sum())
+        pair = out.groupby([out.to_account, out.amount.round(0)]).amount.transform("size") if len(out) else out.amount
+        repeat = pair >= 2
+        paid_once = out.to_account.map(out.to_account.value_counts()) == 1
+        one_off = out[~repeat]
+        matches = []
+        for row in inc.sort_values("amount", ascending=False).itertuples():
+            nxt = one_off[(one_off.timestamp >= row.timestamp)
+                          & (one_off.timestamp <= row.timestamp + pd.Timedelta(hours=MATCH_HOURS))]
+            share = float(nxt.amount.sum()) / row.amount if row.amount else 0.0
+            if MATCH_SHARE[0] <= share <= MATCH_SHARE[1]:
+                matches.append({"inflow": row.txn_id, "amount": round(float(row.amount), 2),
+                                "onward": nxt.txn_id.tolist()[:10], "onward_share": round(share, 2),
+                                "onward_recipients": int(nxt.to_account.nunique())})
+        return {
+            "money_out_vs_in": round(total_out / total_in, 1) if total_in else None,
+            "repeat_payment_share": round(float(repeat.mean()), 2) if len(out) else 0.0,
+            "one_off_recipient_share": round(float(paid_once.mean()), 2) if len(out) else 0.0,
+            "matched_pass_throughs": len(matches),
+            "examples": matches[:3],
+            "note": (f"matched pass-through = an inflow followed within {MATCH_HOURS}h by one-off payments adding up "
+                     f"to {MATCH_SHARE[0]:.0%}-{MATCH_SHARE[1]:.0%} of it; repeat payment = same recipient and amount "
+                     "paid more than once"),
         }
 
     @staticmethod

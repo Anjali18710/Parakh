@@ -88,6 +88,15 @@ function ShapeFacts({ shape }: { shape: Record<string, unknown> }) {
       ? `pays out every ${sched.median_gap_days} days, ${regular ? 'on a regular schedule' : 'irregularly'}`
       : 'too few payment days to judge a schedule',
   ]
+  // Added after the first IBM runs; older cases do not have them.
+  if (typeof shape.matched_pass_throughs === 'number') {
+    const n = shape.matched_pass_throughs
+    facts.push(n ? `${n} payment${n === 1 ? '' : 's'} in passed straight on to one-off recipients within 2 days`
+                 : 'nothing received was passed straight on')
+  }
+  if (typeof shape.repeat_payment_share === 'number') {
+    facts.push(`${pct(shape.repeat_payment_share)} of payments out repeat the same recipient and amount`)
+  }
   return (
     <div className="shape">
       <h4>Measured from the ledger</h4>

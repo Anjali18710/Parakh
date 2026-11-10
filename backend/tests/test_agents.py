@@ -95,9 +95,13 @@ def test_structural_candidates_follow_the_shape_of_the_flow():
     hub = {"senders_in_window": 8, "recipients_in_window": 6}
     assert structural_candidates(hub, {})[0] == "gather_scatter" and "fan_in" not in structural_candidates(hub, {})
     trader = {"senders_in_window": 13, "recipients_in_window": 1, "inflow_from_repeat_senders": 1.0}
-    assert structural_candidates(trader, {}) == ["wholesale"]
+    assert structural_candidates(trader, {}) == ["wholesale", "ordinary"]  # "nothing unusual" is always possible
     loop = {"senders_in_window": 1, "recipients_in_window": 1, "in_loop_within_7_days": True}
     assert structural_candidates(loop, {})[0] == "cycle" and "layering_chain" not in structural_candidates(loop, {})
+    # A one-to-one flow is only a layering chain if received money was actually passed straight on.
+    quiet = {"senders_in_window": 1, "recipients_in_window": 1, "matched_pass_throughs": 0}
+    assert "layering_chain" not in structural_candidates(quiet, {}) and "ordinary" in structural_candidates(quiet, {})
+    assert "layering_chain" in structural_candidates({**quiet, "matched_pass_throughs": 1}, {})
 
 
 def test_relationships_separate_business_from_laundering(store):
