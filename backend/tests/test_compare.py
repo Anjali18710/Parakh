@@ -55,4 +55,32 @@ def test_stops_on_the_daily_limit_and_carries_on_next_time(store, tmp_path):
     assert s["rules"]["cases"] == s["parakh"]["cases"] == 6
     assert s["rules"]["laundering"] == 3 and s["rules"]["innocent"] == 3
     text = markdown(s, "fake-model")
-    assert "| Rules alone (score ≥ 2) |" in text and "| Parakh |" in text and "so far" not in text
+    assert "| Rules alone (score >= 2) |" in text and "| Parakh |" in text and "so far" not in text
+
+
+def test_detail_is_saved_and_the_dev_set_never_touches_the_test_set(store, tmp_path):
+    alerts = [a.to_dict() for a in screen(store)]
+    laundering = set(true_patterns(store))
+    test_set = set(pick_sample(alerts, laundering, 6, seed=7))
+    rows = run(store, alerts, FakeLLM(), tmp_path, n=4, seed=99, log=lambda *_: None, exclude=test_set)
+    assert rows and not {r["account"] for r in rows} & test_set
+    detail = rows[0]["parakh"]
+    assert detail["summary"] and detail["claim_texts"] and detail["pattern_candidates"]
+
+
+class _BadToolCallOnce(FakeLLM):
+    """Like GPT-OSS on Groq now and then: the first reply calls a tool that does not exist."""
+    failed = False
+
+    def invoke(self, msgs, config=None):
+        if not self.failed:
+            self.failed = True
+            raise ValueError("Error code: 400 - {'error': {'message': \"Tool call validation failed: attempted to call "
+                             "tool 'json' which was not in request.tools\", 'code': 'tool_use_failed'}}")
+        return super().invoke(msgs, config)
+
+
+def test_a_made_up_tool_call_is_asked_again_instead_of_failing_the_case(store, tmp_path):
+    alerts = [a.to_dict() for a in screen(store)]
+    rows = run(store, alerts, _BadToolCallOnce(), tmp_path, n=2, log=lambda *_: None)
+    assert all("parakh" in r and "error" not in r for r in rows)

@@ -6,6 +6,7 @@ import json
 from langchain_core.messages import HumanMessage, SystemMessage
 
 from parakh.agents import prompts
+from parakh.agents.llm import invoke_retrying
 from parakh.agents.schemas import TriageResult
 
 BATCH = 30
@@ -23,9 +24,9 @@ def triage_with_llm(llm, alerts: list[dict], budget: int, config: dict | None = 
     decisions: list[dict] = []
     for i in range(0, len(alerts), BATCH):
         batch = alerts[i:i + BATCH]
-        result: TriageResult = model.invoke(
-            [SystemMessage(prompts.TRIAGE.format(budget=budget)),
-             HumanMessage(json.dumps(batch, ensure_ascii=False))], config=config)
+        result: TriageResult = invoke_retrying(model, [
+            SystemMessage(prompts.TRIAGE.format(budget=budget)),
+            HumanMessage(json.dumps(batch, ensure_ascii=False))], config)
         known = {a["account"] for a in batch}
         decisions += [d.model_dump() for d in result.decisions if d.account in known]
     opened = [d for d in decisions if d["open_case"]]

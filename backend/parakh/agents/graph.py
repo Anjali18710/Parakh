@@ -26,6 +26,7 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.types import interrupt
 
 from parakh.agents import prompts
+from parakh.agents.llm import invoke_retrying
 from parakh.agents.schemas import CaseReport, PatternFinding
 from parakh.agents.verifier import tool_findings, verify_report
 from parakh.config import Settings
@@ -123,7 +124,7 @@ def run_tool_loop(llm, tools: list[StructuredTool], system: str, user: str, budg
     msgs = [SystemMessage(system), HumanMessage(user)]
     evidence, events, calls = [], [], 0
     while True:
-        ai: AIMessage = bound.invoke(msgs, config=config)
+        ai: AIMessage = invoke_retrying(bound, msgs, config)
         msgs.append(ai)
         if not ai.tool_calls:
             break
@@ -145,7 +146,7 @@ def run_tool_loop(llm, tools: list[StructuredTool], system: str, user: str, budg
             events.append(_emit(config, _event(agent_name, f"called {call['name']}", call["args"])))
         if calls >= budget:
             msgs.append(HumanMessage("Your tool budget is used up. Write your evidence summary now."))
-            ai = llm.invoke(msgs, config=config)
+            ai = invoke_retrying(llm, msgs, config)
             msgs.append(ai)
             break
     return _text(msgs[-1]), evidence, events, calls
@@ -259,14 +260,14 @@ def build_case_graph(deps: Deps, mode: Mode = "multi", human_review: bool = True
                              f"{describe_precedents(precedents)}\n\n"
                              f"Investigator summary:\n{state.get('investigation_summary', '')}")]
         events: list[dict] = []
-        finding: PatternFinding = model.invoke(msgs, config=config)
+        finding: PatternFinding = invoke_retrying(model, msgs, config)
         source = "agent"
         if allowed_ids and finding.pattern_id not in allowed_ids:
             reason = pattern_conflict(finding.pattern_id, shape, state["alert"]) or "it is not one of the allowed candidates"
             events.append(_emit(config, _event("verifier", f"rejected pattern '{finding.pattern_id}'", reason)))
             msgs.append(HumanMessage(f"'{finding.pattern_id}' is not allowed: {reason}. "
                                      f"Choose exactly one of: {', '.join(allowed_ids)}."))
-            finding = model.invoke(msgs, config=config)
+            finding = invoke_retrying(model, msgs, config)
             if finding.pattern_id not in allowed_ids:
                 # Still outside the allowed set: fall back to the best structural fit.
                 events.append(_emit(config, _event("verifier", f"rejected pattern '{finding.pattern_id}' again",
@@ -307,7 +308,7 @@ def build_case_graph(deps: Deps, mode: Mode = "multi", human_review: bool = True
             msgs.append(HumanMessage(prompts.REPORT_RETRY.format(
                 issues="\n".join(state["verification"]["issues"]),
                 previous=json.dumps(previous.get("draft") or previous, ensure_ascii=False))))
-        report: CaseReport = deps.llm.with_structured_output(CaseReport).invoke(msgs, config=config)
+        report: CaseReport = invoke_retrying(deps.llm.with_structured_output(CaseReport), msgs, config)
         draft = report.model_dump()
         # Code fills in every number the report states, so totals and counts cannot be miscalculated.
         data = {**draft, "claims": [fill_claim(c, deps.store, state["account"]) for c in draft["claims"]], "draft": draft}
