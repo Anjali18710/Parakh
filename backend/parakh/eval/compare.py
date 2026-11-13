@@ -12,13 +12,14 @@ Each finished case is saved straight away. On Groq's free tier the daily token l
 after about a dozen cases; the script then stops cleanly and the same command carries on the
 next day. The summary is rewritten after every run:
 
-    python -m parakh.eval.compare            # run (or continue) the comparison
-    python -m parakh.eval.compare --summary  # only print the summary of what has finished
-    python -m parakh.eval.compare --dev      # try out a change on 10 other alerts, never the 30 above
+    python -m parakh.eval.compare --dev      # try out a change on 10 practice alerts
+    python -m parakh.eval.compare --final    # run (or continue) the 30 alerts the result is based on
+    python -m parakh.eval.compare --summary  # only print the summary of the final run so far
 """
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import random
 import time
@@ -29,11 +30,38 @@ from parakh.agents.llm import UsageTracker, friendly_error, get_llm
 from parakh.agents.service import load_or_screen
 from parakh.config import BACKEND_DIR, settings
 from parakh.data.store import TransactionStore
-from parakh.patterns.library import PatternLibrary
+from parakh.patterns.library import TYPOLOGIES, PatternLibrary
 from parakh.tools.investigation import InvestigationTools
 
 RESULTS_DIR = BACKEND_DIR / "results"
 RULE_THRESHOLD = 2.0
+# Code that decides a verdict. A change to any of it makes earlier results stale.
+VERSIONED_CODE = ("agents", "patterns", "tools")
+
+
+def code_version(model: str | None = None) -> str:
+    """Short fingerprint of the agent code and model, saved with every result.
+
+    Results from a different version are not counted and are run again, so the table never mixes
+    verdicts from before and after a prompt or rules change. Line endings are ignored, so the same code
+    gives the same fingerprint on Windows and Linux.
+    """
+    pkg = BACKEND_DIR / "parakh"
+    h = hashlib.sha256((model or "").encode())
+    for folder in VERSIONED_CODE:
+        for path in sorted((pkg / folder).glob("*.py")):
+            h.update(path.name.encode())
+            h.update(path.read_bytes().replace(b"\r\n", b"\n"))
+    return h.hexdigest()[:12]
+
+
+def current_model() -> str:
+    return settings.gemini_model if settings.llm_provider == "gemini" else settings.groq_model
+
+
+def current_setup() -> str:
+    """Model plus the settings that change its answers."""
+    return f"{current_model()} effort={settings.reasoning_effort} temperature={settings.temperature}"
 
 
 class DailyLimit(Exception):
@@ -87,8 +115,13 @@ def investigate(graph, alert: dict) -> dict:
 
 
 def run(store: TransactionStore, alerts: list[dict], llm, out: Path, n: int = 30, seed: int = 7,
-        max_cases: int | None = None, log=print, exclude: set[str] | None = None) -> list[dict]:
-    """Run every unfinished case of the sample. Raises DailyLimit when Groq's daily limit is reached."""
+        max_cases: int | None = None, log=print, exclude: set[str] | None = None,
+        version: str | None = None) -> list[dict]:
+    """Run every case of the sample not yet finished by this version of the code.
+
+    Raises DailyLimit when Groq's daily limit is reached.
+    """
+    version = version or code_version(current_setup())
     out.mkdir(parents=True, exist_ok=True)
     by_account = {a["account"]: a for a in alerts}
     truth = true_patterns(store)
@@ -99,18 +132,22 @@ def run(store: TransactionStore, alerts: list[dict], llm, out: Path, n: int = 30
         sample = pick_sample(alerts, set(truth), n, seed, exclude)
         sample_path.write_text(json.dumps({"seed": seed, "accounts": sample}, indent=1))
 
-    rows = load_rows(rows_path)
+    rows = load_rows(rows_path, version)
+    stale = len(set(sample) & set(load_rows(rows_path)) - set(rows))
     todo = [acc for acc in sample if acc not in rows]
     if max_cases is not None:
         todo = todo[:max_cases]
-    log(f"{len(rows)} of {len(sample)} cases done, {len(todo)} to run now")
+    log(f"Code version {version}: {len(rows)} of {len(sample)} cases done, {len(todo)} to run now")
+    if stale:
+        log(f"{stale} earlier result(s) came from older code or another model; they are kept in the file "
+            f"but not counted, and run again.")
     graph = build_case_graph(Deps(llm, store, InvestigationTools(store), PatternLibrary(), settings),
                              mode="multi", human_review=False, enforce_verifier=True) if todo else None
     with rows_path.open("a", encoding="utf-8") as fh:
         for i, acc in enumerate(todo, 1):
             alert = by_account[acc]
             row = {"account": acc, "truly_laundering": acc in truth, "true_patterns": truth.get(acc, []),
-                   "rule_score": alert["score"], "rules": rules_verdict(alert)}
+                   "rule_score": alert["score"], "rules": rules_verdict(alert), "version": version}
             try:
                 row["parakh"] = investigate(graph, alert)
             except Exception as exc:  # recorded, and run again next time
@@ -127,14 +164,17 @@ def run(store: TransactionStore, alerts: list[dict], llm, out: Path, n: int = 30
     return [rows[a] for a in sample if a in rows]
 
 
-def load_rows(path: Path) -> dict[str, dict]:
-    """Latest finished result per account. Cases that ended in an error are left out, so they run again."""
+def load_rows(path: Path, version: str | None = None) -> dict[str, dict]:
+    """Latest finished result per account, only from `version` of the code when one is given.
+
+    Cases that ended in an error are left out, so they run again.
+    """
     rows: dict[str, dict] = {}
     if path.exists():
-        for line in path.read_text().splitlines():
+        for line in path.read_text(encoding="utf-8").splitlines():
             if line.strip():
                 row = json.loads(line)
-                if "parakh" in row:
+                if "parakh" in row and (version is None or row.get("version") == version):
                     rows[row["account"]] = row
     return rows
 
@@ -149,15 +189,16 @@ def score(rows: list[dict], verdict) -> dict:
             "precision": round(tp / (tp + fp), 2) if tp + fp else None}
 
 
-def summarise(rows: list[dict], total: int) -> dict:
+def summarise(rows: list[dict], total: int, version: str = "") -> dict:
     rules = score(rows, lambda r: r["rules"])
     parakh = score(rows, lambda r: r["parakh"]["verdict"])
+    known = {t.id for t in TYPOLOGIES if t.kind == "laundering"}
     caught = [r for r in rows if r["truly_laundering"] and r["parakh"]["verdict"] == "suspicious"
-              and r["true_patterns"] and r["true_patterns"] != ["other_scheme"]]
+              and known & set(r["true_patterns"])]
     named = sum(r["parakh"]["pattern_id"] in r["true_patterns"] for r in caught)
     p = [r["parakh"] for r in rows]
     return {
-        "cases_done": len(rows), "cases_total": total, "rules": rules, "parakh": parakh,
+        "cases_done": len(rows), "cases_total": total, "version": version, "rules": rules, "parakh": parakh,
         "pattern_named": named, "pattern_checked": len(caught),
         "claims": sum(x["claims"] for x in p), "claims_verified": sum(x["claims_verified"] for x in p),
         "rewrites": sum(x["rewrites"] > 0 for x in p),
@@ -176,7 +217,8 @@ def markdown(s: dict, model: str) -> str:
     return "\n".join([
         f"# Rules alone vs Parakh on IBM's AML data{done}", "",
         (f"{s['cases_total']} screening alerts from the IBM slice, half on accounts IBM labels as laundering and "
-         f"half on innocent ones. Model: `{model}`. Answer key: IBM's `is_laundering` labels."), "",
+         f"half on innocent ones. Model: `{model}`. Code version: `{s.get('version') or '-'}`. "
+         f"Answer key: IBM's `is_laundering` labels."), "",
         "| | Laundering caught | Innocent cleared | False alarms | Precision | Right overall |",
         "|---|---|---|---|---|---|",
         line("Rules alone (score >= 2)", s["rules"]),
@@ -197,10 +239,15 @@ def main() -> None:
     p.add_argument("--summary", action="store_true", help="only print the summary of finished cases")
     p.add_argument("--dev", action="store_true",
                    help="use a separate set of 10 alerts for trying out changes (never the 30 used for the result)")
+    p.add_argument("--final", action="store_true", help="run the 30 alerts the published result is based on")
     p.add_argument("--out", default=str(RESULTS_DIR))
     a = p.parse_args()
+    if not (a.dev or a.final or a.summary):
+        # Asked for explicitly, so the 30 test alerts are never run by accident while changes are tried out.
+        p.error("say which set to run: --dev (10 practice alerts) or --final (the 30 the result is based on)")
 
     out = Path(a.out)
+    version = code_version(current_setup())
     store = TransactionStore.from_csv(settings.data_path)
     alerts = load_or_screen(store, settings.data_path)
     exclude = None
@@ -212,10 +259,10 @@ def main() -> None:
             exclude |= set(json.loads((Path(a.out) / "sample.json").read_text())["accounts"])
     if a.summary:
         sample = json.loads((out / "sample.json").read_text())["accounts"]
-        rows = [r for acc, r in load_rows(out / "cases.jsonl").items() if acc in sample]
+        rows = [r for acc, r in load_rows(out / "cases.jsonl", version).items() if acc in sample]
     else:
         try:
-            run(store, alerts, get_llm(), out, a.sample, a.seed, a.max, exclude=exclude)
+            run(store, alerts, get_llm(), out, a.sample, a.seed, a.max, exclude=exclude, version=version)
         except DailyLimit as stop:
             print(f"\nStopped: {stop}\nGroq's daily limit refills a little at a time over 24 hours, so a full case "
                   "(about 15,000 tokens) usually has to wait until about this time tomorrow.\n"
@@ -223,12 +270,11 @@ def main() -> None:
         except KeyboardInterrupt:
             print("\nStopped. Everything finished so far is saved; run the same command to continue.")
         sample = json.loads((out / "sample.json").read_text())["accounts"]
-        rows = [r for acc, r in load_rows(out / "cases.jsonl").items() if acc in sample]
+        rows = [r for acc, r in load_rows(out / "cases.jsonl", version).items() if acc in sample]
     if not rows:
         print("No cases finished yet.")
         return
-    model = settings.gemini_model if settings.llm_provider == "gemini" else settings.groq_model
-    text = markdown(summarise(rows, len(sample)), model)
+    text = markdown(summarise(rows, len(sample), version), current_model())
     (out / "summary.md").write_text(text, encoding="utf-8")
     print("\n" + text)
 

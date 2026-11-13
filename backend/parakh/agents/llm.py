@@ -25,17 +25,22 @@ def get_llm(cfg: Settings | None = None):
     return ChatGroq(model=cfg.groq_model, temperature=cfg.temperature, max_retries=6, **extra)
 
 
-def invoke_retrying(model, msgs, config=None, attempts: int = 3):
-    """model.invoke, tried again when the model produced a malformed tool call.
+# Groq error codes for a reply the model botched; asking again almost always works.
+RETRYABLE = ("tool_use_failed", "output_parse_failed")
 
-    GPT-OSS on Groq sometimes calls a tool that does not exist (for example one named 'json'), and
-    Groq rejects the reply with 'tool_use_failed'. Asking again almost always works.
+
+def invoke_retrying(model, msgs, config=None, attempts: int = 3):
+    """model.invoke, tried again when the model produced a malformed reply.
+
+    GPT-OSS on Groq sometimes calls a tool that does not exist (for example one named 'json'), which Groq
+    rejects with 'tool_use_failed', or writes its reasoning where the JSON answer should be ("We need to
+    produce..."), which Groq rejects with 'output_parse_failed'. Asking again almost always works.
     """
     for attempt in range(1, attempts + 1):
         try:
             return model.invoke(msgs, config=config)
         except Exception as exc:
-            if attempt == attempts or "tool_use_failed" not in str(exc):
+            if attempt == attempts or not any(code in str(exc) for code in RETRYABLE):
                 raise
 
 
