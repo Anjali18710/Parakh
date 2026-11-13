@@ -119,3 +119,10 @@ def test_pattern_conflicts_with_measured_shape():
     assert pattern_conflict("wholesale", trader) is None
     assert pattern_conflict("fan_in", trader) is not None
     assert pattern_conflict("wholesale", {**trader, "inflow_from_repeat_senders": 0.0}) is not None
+
+
+def test_ordinary_is_ruled_out_once_received_money_was_passed_straight_on():
+    from parakh.agents.rules import structural_candidates
+    busy = {"senders_in_window": 3, "recipients_in_window": 7, "repeat_payment_share": 0.97}
+    assert "ordinary" in structural_candidates({**busy, "matched_pass_throughs": 0}, {})
+    assert "ordinary" not in structural_candidates({**busy, "matched_pass_throughs": 2}, {})

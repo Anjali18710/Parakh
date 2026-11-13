@@ -103,3 +103,13 @@ def test_counts_in_words_are_checked_but_amount_digits_are_not(store):
     assert count_mentions(f"{acc} sent ₹1,234.00 in two payments.", rows, acc) == []
     wrong = count_mentions(f"{acc} made three payments.", rows, acc)
     assert wrong and wrong[0]["expected"] == 2 and wrong[0]["replacement"] == "two"
+
+
+def test_summary_must_be_finished_and_in_indian_units(store):
+    from parakh.agents.verifier import verify_report
+    report = {"verdict": "not_suspicious", "summary": "Received {total} from {count_in} accounts.", "claims": [],
+              "checks": []}
+    issues = verify_report(report, store, "AC000001")["issues"]
+    assert any("placeholder {total}" in i for i in issues)
+    report["summary"] = "Received ₹7.75 million and paid out ₹109 million."
+    assert any("Indian way" in i for i in verify_report(report, store, "AC000001")["issues"])

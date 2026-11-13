@@ -133,6 +133,8 @@ def _contradicting_findings(tool: str | None, evidence: list[dict] | None) -> li
     return found
 
 
+_WESTERN_UNITS = re.compile(r"\b(million|billion)s?\b", re.I)
+
 def verify_report(report: dict, store: TransactionStore, case_account: str,
                   tools_used: set[str] | None = None, trusted_amounts: list[float] | None = None,
                   pattern_kind: str | None = None, evidence: list[dict] | None = None) -> dict:
@@ -194,6 +196,16 @@ def verify_report(report: dict, store: TransactionStore, case_account: str,
 
     if pattern_kind == "innocent" and report.get("verdict") == "suspicious":
         issues.append("verdict 'suspicious' contradicts the pattern finding, which is an innocent explanation")
+
+    # The summary is read first, so it must be finished and in Indian units like the rest of the file.
+    summary = report.get("summary", "")
+    left = re.findall(r"\{\w+\}", summary)
+    if left:
+        issues.append(f"summary: placeholder {left[0]} could not be filled in; the summary can only use "
+                      "{total_in}, {total_out}, {senders}, {recipients} and {passed_through}")
+    texts = [summary] + [c.get("statement", "") for c in report.get("claims", [])]
+    if any(_WESTERN_UNITS.search(t) for t in texts):
+        issues.append("amounts must be written the Indian way (lakh, crore), not in millions or billions")
 
     # The summary may only quote amounts that some cited evidence supports.
     for value, tol in _amounts_with_tolerance(report.get("summary", "")):

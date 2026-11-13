@@ -76,6 +76,8 @@ def pattern_conflict(pattern_id: str, shape: dict, alert: dict | None = None) ->
         "property": [(r <= 2, f"a property purchase pays one seller, measured {r} recipients"),
                      (s <= 2, f"a property purchase is funded by one loan or source, measured {s} senders"),
                      (not loop, "money returns to this account in a loop")],
+        "ordinary": [(shape.get("matched_pass_throughs", 0) == 0,
+                      "money received was passed straight on to one-off recipients, which ordinary activity does not do")],
         "family": [(s <= 4 and r <= 4, f"family transfers stay in a small group, measured {s} senders and {r} recipients"),
                    (rep_in >= 0.3 or rep_out >= 0.3 or loop, "family members transact repeatedly, but counterparties are all new")],
     }

@@ -39,6 +39,8 @@ from parakh.agents.memory import describe as describe_precedents
 from parakh.agents.rules import correct_claim, fill_claim, fill_summary, pattern_conflict, shape_facts, structural_candidates
 from parakh.tools.investigation import InvestigationTools
 
+INNOCENT_MAX_RISK = 30  # an innocent explanation that the report agrees with is low risk by definition
+
 Mode = Literal["multi", "single"]
 TOOL_RESULT_CHARS = 2000   # every tool result is re-sent on each later step, so it is kept small
 DIGEST_CHARS = 500
@@ -260,14 +262,14 @@ def build_case_graph(deps: Deps, mode: Mode = "multi", human_review: bool = True
                              f"{describe_precedents(precedents)}\n\n"
                              f"Investigator summary:\n{state.get('investigation_summary', '')}")]
         events: list[dict] = []
-        finding: PatternFinding = invoke_retrying(model, msgs, config)
+        finding: PatternFinding = invoke_retrying(model, msgs, config, schema=PatternFinding)
         source = "agent"
         if allowed_ids and finding.pattern_id not in allowed_ids:
             reason = pattern_conflict(finding.pattern_id, shape, state["alert"]) or "it is not one of the allowed candidates"
             events.append(_emit(config, _event("verifier", f"rejected pattern '{finding.pattern_id}'", reason)))
             msgs.append(HumanMessage(f"'{finding.pattern_id}' is not allowed: {reason}. "
                                      f"Choose exactly one of: {', '.join(allowed_ids)}."))
-            finding = invoke_retrying(model, msgs, config)
+            finding = invoke_retrying(model, msgs, config, schema=PatternFinding)
             if finding.pattern_id not in allowed_ids:
                 # Still outside the allowed set: fall back to the best structural fit.
                 events.append(_emit(config, _event("verifier", f"rejected pattern '{finding.pattern_id}' again",
@@ -308,12 +310,15 @@ def build_case_graph(deps: Deps, mode: Mode = "multi", human_review: bool = True
             msgs.append(HumanMessage(prompts.REPORT_RETRY.format(
                 issues="\n".join(state["verification"]["issues"]),
                 previous=json.dumps(previous.get("draft") or previous, ensure_ascii=False))))
-        report: CaseReport = invoke_retrying(deps.llm.with_structured_output(CaseReport), msgs, config)
+        report: CaseReport = invoke_retrying(deps.llm.with_structured_output(CaseReport), msgs, config,
+                                             schema=CaseReport)
         draft = report.model_dump()
         # Code fills in every number the report states, so totals and counts cannot be miscalculated.
         data = {**draft, "claims": [fill_claim(c, deps.store, state["account"]) for c in draft["claims"]], "draft": draft}
         if pattern:
             data["pattern_id"] = pattern["pattern_id"]
+            if pattern.get("kind") == "innocent" and data["verdict"] == "not_suspicious":
+                data["risk_score"] = min(int(data.get("risk_score") or 0), INNOCENT_MAX_RISK)
             data["summary"] = fill_summary(draft["summary"], pattern.get("shape", {}))
         else:
             cited = [t for c in draft["claims"] for t in c.get("txn_ids", [])]

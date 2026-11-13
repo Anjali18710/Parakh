@@ -151,3 +151,27 @@ def test_pattern_score_only_counts_ibm_types_parakh_knows():
             row(["other_scheme", "stack"], "cycle")]
     s = summarise(rows, 4)
     assert s["pattern_checked"] == 2 and s["pattern_named"] == 1
+
+
+class _JsonToolEveryTime(FakeLLM):
+    """GPT-OSS on Groq, for some prompts: answers through a made-up 'json' tool on every try."""
+
+    def with_structured_output(self, schema):
+        inner = super().with_structured_output(schema)
+
+        class _Rejected(Exception):
+            def __init__(self, answer):
+                super().__init__("Error code: 400 - tool_use_failed")
+                self.body = {"error": {"code": "tool_use_failed", "failed_generation":
+                                       json.dumps({"name": "json", "arguments": answer})}}
+
+        class _Always:
+            def invoke(self, msgs, config=None):
+                raise _Rejected(inner.invoke(msgs, config).model_dump())
+        return _Always()
+
+
+def test_an_answer_sent_through_a_made_up_json_tool_is_still_used(store, tmp_path):
+    alerts = [a.to_dict() for a in screen(store)]
+    rows = run(store, alerts, _JsonToolEveryTime(), tmp_path, n=2, log=lambda *_: None)
+    assert all("parakh" in r and "error" not in r and r["parakh"]["verdict"] for r in rows)

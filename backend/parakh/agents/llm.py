@@ -1,6 +1,7 @@
 """LLM factory and token-usage tracking."""
 from __future__ import annotations
 
+import json
 import re
 import threading
 from typing import Any
@@ -29,19 +30,42 @@ def get_llm(cfg: Settings | None = None):
 RETRYABLE = ("tool_use_failed", "output_parse_failed")
 
 
-def invoke_retrying(model, msgs, config=None, attempts: int = 3):
+def invoke_retrying(model, msgs, config=None, attempts: int = 3, schema=None):
     """model.invoke, tried again when the model produced a malformed reply.
 
     GPT-OSS on Groq sometimes calls a tool that does not exist (for example one named 'json'), which Groq
     rejects with 'tool_use_failed', or writes its reasoning where the JSON answer should be ("We need to
-    produce..."), which Groq rejects with 'output_parse_failed'. Asking again almost always works.
+    produce..."), which Groq rejects with 'output_parse_failed'. Asking again usually works. For a
+    structured answer (`schema` given) the rejected 'json' call often holds the complete answer, so it
+    is used directly when it passes the schema's validation; some prompts make the model repeat that
+    mistake every time.
     """
     for attempt in range(1, attempts + 1):
         try:
             return model.invoke(msgs, config=config)
         except Exception as exc:
+            if schema is not None and (answer := salvage(exc, schema)) is not None:
+                return answer
             if attempt == attempts or not any(code in str(exc) for code in RETRYABLE):
                 raise
+
+
+def salvage(exc: Exception, schema):
+    """The answer inside a rejected tool call, validated against `schema`, or None."""
+    body = getattr(exc, "body", None)
+    if isinstance(body, dict):
+        body = body.get("error", body)
+    generated = body.get("failed_generation") if isinstance(body, dict) else None
+    if not generated:
+        return None
+    try:
+        data = json.loads(generated)
+        data = data.get("arguments", data) if isinstance(data, dict) else data
+        if isinstance(data, str):
+            data = json.loads(data)
+        return schema.model_validate(data)
+    except (ValueError, TypeError, AttributeError):  # pydantic's ValidationError is a ValueError
+        return None
 
 
 _TRY_AGAIN = re.compile(r"try again in\s+([0-9hms.]+)", re.I)

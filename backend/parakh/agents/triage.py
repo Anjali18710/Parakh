@@ -26,7 +26,7 @@ def triage_with_llm(llm, alerts: list[dict], budget: int, config: dict | None = 
         batch = alerts[i:i + BATCH]
         result: TriageResult = invoke_retrying(model, [
             SystemMessage(prompts.TRIAGE.format(budget=budget)),
-            HumanMessage(json.dumps(batch, ensure_ascii=False))], config)
+            HumanMessage(json.dumps(batch, ensure_ascii=False))], config, schema=TriageResult)
         known = {a["account"] for a in batch}
         decisions += [d.model_dump() for d in result.decisions if d.account in known]
     opened = [d for d in decisions if d["open_case"]]
